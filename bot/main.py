@@ -110,7 +110,11 @@ async def cmd_coupon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    kb = _login_kb(update.effective_user.id, update.effective_chat.id)
+    uid = update.effective_user.id
+    if db.touch_user(uid, "tg", update.effective_user.full_name):  # 首触建档 + 告警 owner
+        context.application.create_task(push.notify_owner(
+            f"🆕 新用户(TG)：{update.effective_user.full_name or uid}（{uid}）"))
+    kb = _login_kb(uid, update.effective_chat.id)
     text = (
         "☕ 欢迎使用瑞幸点单助手！\n\n"
         "1) 先登录瑞幸账号"
@@ -267,6 +271,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if db.touch_user(uid, "tg", update.effective_user.full_name):
         context.application.create_task(push.notify_owner(
             f"🆕 新用户(TG)：{update.effective_user.full_name or uid}（{uid}）"))
+        await cmd_start(update, context)  # 新用户首触(非 /start) → 引导，不当点单处理
+        return
     reason = db.gate_message(uid, db.today_cst())  # 封禁 / 每日次数上限（护 API 预算）
     if reason:
         await update.message.reply_text(reason)
@@ -283,6 +289,8 @@ async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if db.touch_user(uid, "tg", update.effective_user.full_name):
         context.application.create_task(push.notify_owner(
             f"🆕 新用户(TG)：{update.effective_user.full_name or uid}（{uid}）"))
+        await cmd_start(update, context)  # 新用户首触(非 /start) → 引导，不当点单处理
+        return
     reason = db.gate_message(uid, db.today_cst())  # 闸在转写前，过限不花 ASR
     if reason:
         await update.message.reply_text(reason)

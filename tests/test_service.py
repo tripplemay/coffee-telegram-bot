@@ -4,7 +4,14 @@ import json
 import pytest
 
 from bot.agent import OrderingAgent
+from core import db
 from service.app import ChannelCore
+
+
+@pytest.fixture(autouse=True)
+def _suppress_onboarding(monkeypatch):
+    """这些编排测试不验证"新用户首触引导"；让 touch_user 恒视为老用户。"""
+    monkeypatch.setattr(db, "touch_user", lambda *a, **k: False)
 
 
 class FakeMCP:

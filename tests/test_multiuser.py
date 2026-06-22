@@ -97,6 +97,19 @@ def test_admin_command():
     assert "参数错误" in admin.admin_command("limit 5555 abc 10")
 
 
+def test_wechat_new_user_onboarding():
+    import asyncio
+
+    from service.app import ChannelCore
+    core = ChannelCore()
+    u = "wx_brand_new_user_xyz"
+    acts = asyncio.run(core.handle(u, "在吗"))           # 新用户首触 → 引导
+    assert any("欢迎使用瑞幸点单助手" in a["text"] for a in acts)
+    assert any("登录" in a["text"] for a in acts)
+    acts2 = asyncio.run(core.handle(u, "在吗"))           # 老用户：不再引导
+    assert not any("欢迎使用瑞幸点单助手" in a["text"] for a in acts2)
+
+
 def test_trim_history_keeps_system_and_user_boundary():
     msgs = [{"role": "system", "content": "sys"}]
     for i in range(60):

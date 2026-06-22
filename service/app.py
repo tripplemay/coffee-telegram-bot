@@ -109,6 +109,7 @@ class ChannelCore:
         uid = _uid(user_key)
         if db.touch_user(uid, "wx", None):
             asyncio.create_task(push.notify_owner(f"🆕 新用户(微信)：{user_key}（db {uid}）"))
+            return self._onboard(user_key)  # 新用户首触 → 引导（wx-link 无好友事件，以首条消息触发）
         reason = db.gate_message(uid, db.today_cst())  # 封禁 / 每日次数上限（护 API 预算）
         if reason:
             return [_text(reason)]
@@ -294,6 +295,23 @@ class ChannelCore:
                           "⚠️ 第三方代领属灰色地带，仅个人低频、只领免费券、绝不扣钱。\n"
                           f"点链接绑定（手机号+短信）：\n{base}/coupon-login?t={nonce}\n链接 15 分钟内有效。")]
         return [_text(coupon.format_claim_result(res))]
+
+    def _onboard(self, key: str) -> list[dict]:
+        """新用户首触引导：欢迎 + 一键登录链接 + 三步说明（微信无好友事件，以首条消息触发）。"""
+        msg = ("☕ 欢迎使用瑞幸点单助手！\n"
+               "1) 先登录瑞幸账号（点下方链接，手机号+短信，免粘贴 Token）\n"
+               "2) 发『/loc 你的地址』或『/here』设置位置\n"
+               "3) 直接说想喝什么，例如「来杯热的生椰拿铁」\n"
+               "下单前会让你确认价格，不会乱扣款 👍　其他：/orders 查单 · /福利 领券")
+        acts = [_text(msg)]
+        base = login_base_url()
+        if base:
+            nonce = secrets.token_urlsafe(12)
+            db.create_login_nonce(nonce, _uid(key), channel="wx", push_target=key)
+            acts.append(_text(f"🔑 登录：{base}/login?t={nonce}\n（链接 15 分钟内有效）"))
+        else:
+            acts.append(_text("登录：/login <你的瑞幸Token>"))
+        return acts
 
     def _here(self, key: str) -> list[dict]:
         """发一键定位网页链接（消费/桌面都行）；微信文字桥拿不到 GPS，故走网页。"""
