@@ -1,0 +1,43 @@
+name: deploy
+
+# push 到 main 自动部署到自有 VPS（长轮询 bot，无需公网域名）。
+# 未配置 VPS_* secrets 时自动跳过，不会失败。也可手动触发。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check VPS secrets configured
+        id: cfg
+        run: |
+          if [ -n "${{ secrets.VPS_HOST }}" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::VPS_* secrets 未配置，跳过部署（见 deploy/SETUP.md）。"
+          fi
+
+      - name: Deploy over SSH
+        if: steps.cfg.outputs.ok == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script_stop: true
+          script: |
+            cd "${{ secrets.VPS_PATH }}"
+            git fetch --all --quiet
+            git reset --hard origin/main
+            .venv/bin/pip install -q -e .
+            sudo systemctl restart coffee-bot
+            echo "deployed $(git rev-parse --short HEAD)"

@@ -1,5 +1,7 @@
 # ☕ Telegram 瑞幸咖啡点单机器人
 
+![ci](https://github.com/tripplemay/coffee-telegram-bot/actions/workflows/ci.yml/badge.svg)
+
 用自然语言在 Telegram 里点瑞幸咖啡。LLM agent 编排瑞幸开放平台的 MCP 工具，
 完成「找店 → 选品 → 预览 → 确认 → 下单 → 支付 → 取餐」全流程。
 
@@ -34,6 +36,13 @@ python -m bot.main          # 长轮询启动
 ## Mini App 自助登录（P1，先跑 P0）
 见 [`spike/README.md`](spike/README.md)：跑通极验滑块在自有域名的验证后，再启用 `web/` 的 Mini App 登录按钮
 （在 `.env` 配 `PUBLIC_BASE_URL` 为 cloudflared/ngrok 域名）。
+
+## 部署（自有 VPS + CI/CD）
+长轮询 bot 无需公网域名，只要 24/7 常驻进程。`.github/workflows/` 提供：
+- **ci**：每次 push/PR 跑 pytest。
+- **deploy**：push 到 `main` 自动 SSH 部署到 VPS 并 `systemctl restart`（未配置 `VPS_*` secrets 时自动跳过）。
+
+一次性配置见 [`deploy/SETUP.md`](deploy/SETUP.md)（VPS 建 venv + `.env` + systemd 服务，GitHub 配 `VPS_HOST/USER/SSH_KEY/PATH` secrets）。
 
 ## 测试
 ```bash

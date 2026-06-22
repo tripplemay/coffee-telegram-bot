@@ -1,0 +1,21 @@
+[Unit]
+Description=Luckin Coffee Telegram Bot (long-polling)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 按实际修改 User 与路径
+User=coffee
+WorkingDirectory=/opt/coffee-bot
+# 运行时密钥从 WorkingDirectory 下的 .env 读取（pydantic-settings），.env 不入库
+ExecStart=/opt/coffee-bot/.venv/bin/python -m bot.main
+Restart=always
+RestartSec=5
+# 轻度加固
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
