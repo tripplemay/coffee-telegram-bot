@@ -76,26 +76,30 @@ def spend_guard(tg_user_id: int, price: Optional[float]) -> Optional[str]:
     return None
 
 
-def format_order_created(resp: Any) -> tuple[str, Optional[str], Optional[str], bool]:
-    """返回 (文本, 支付二维码内容, orderId, 是否需要扫码支付)。
+def format_order_created(resp: Any) -> tuple[str, Optional[str], Optional[str], bool, Optional[str]]:
+    """返回 (文本, 二维码内容, orderId, 是否需扫码支付, 中转支付页URL)。
 
-    若 needPay=false（被咖啡库券/余额全额覆盖），走免扫码路径：不返回二维码。
+    二维码优先用 `payOrderUrl`（weixin://wxpay/bizpayurl 原生支付码）→ 微信一扫直接付款，
+    省去「先扫到瑞幸中转网页」那一跳；`payOrderQrCodeUrl`（https 中转页）作为同屏点击兜底。
+    若 needPay=false（券/余额全额覆盖），免扫码：不返回二维码。
     """
     data = unwrap(resp)
     if not isinstance(data, dict):
-        return (f"下单失败：{resp}", None, None, False)
+        return (f"下单失败：{resp}", None, None, False, None)
     order_id = data.get("orderIdStr") or (str(data["orderId"]) if data.get("orderId") else None)
     need_pay = bool(data.get("needPay"))
-    qr = (data.get("payOrderQrCodeUrl") or data.get("payOrderUrl")) if need_pay else None
+    pay_deeplink = data.get("payOrderUrl")       # weixin://...  微信原生支付码（直接付）
+    pay_page = data.get("payOrderQrCodeUrl")     # https 瑞幸中转页（同屏点击兜底）
+    qr = (pay_deeplink or pay_page) if need_pay else None
     price = data.get("discountPrice")
     text = "✅ 已创建订单"
     if isinstance(price, (int, float)):
         text += f"，应付 ¥{price}"
     if need_pay:
-        text += "\n请扫下方二维码用微信支付 👇"
+        text += "\n请用微信扫下方二维码直接支付 👇"
     else:
         text += "\n🎉 已用券/余额完成支付，无需扫码，正在为你制作 ☕"
-    return (text, qr, order_id, need_pay)
+    return (text, qr, order_id, need_pay, pay_page if need_pay else None)
 
 
 def created_price(resp: Any) -> Optional[float]:

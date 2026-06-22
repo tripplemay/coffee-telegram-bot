@@ -236,7 +236,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # 确认 → 执行 createOrder（我们自己执行以拿到二维码并记账）
     await q.edit_message_text("⏳ 正在为你下单…")
     create_result = await AGENT.execute_pending(rec.token, pending["call"])
-    text, qr, order_id, need_pay = flows.format_order_created(create_result)
+    text, qr, order_id, need_pay, pay_page = flows.format_order_created(create_result)
 
     # 价格一致性兜底：实际下单价高于确认价（如优惠未生效）→ 显著告警
     confirmed = pending.get("price")
@@ -253,7 +253,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             db.record_spend(q.from_user.id, datetime.now().strftime("%Y-%m-%d"), record_price, order_id)
     await q.message.reply_text(text)
     if need_pay and qr:
-        await context.bot.send_photo(q.message.chat_id, ui.make_qr_png(qr), caption="微信扫码支付")
+        page_kb = (InlineKeyboardMarkup([[InlineKeyboardButton("📱 同屏无法扫码？点此打开支付页", url=pay_page)]])
+                   if pay_page else None)
+        await context.bot.send_photo(q.message.chat_id, ui.make_qr_png(qr),
+                                     caption="微信扫码直接支付", reply_markup=page_kb)
 
     res = await AGENT.resume_after_confirm(messages, pending["call"], rec.token,
                                            approved=True, exec_result=create_result)

@@ -16,6 +16,7 @@ CREATED = {
     "code": 0, "msg": "success", "success": True,
     "data": {
         "orderId": 7639308439653908490, "orderIdStr": "7639308439653908490",
+        "payOrderUrl": "weixin://wxpay/bizpayurl?pr=ifbmtaEz1",
         "payOrderQrCodeUrl": "https://opentest03.lkcoffee.com/transfer/qrcode?token=xxxx",
         "discountPrice": 16, "needPay": True,
     },
@@ -41,10 +42,12 @@ def test_format_preview():
 
 
 def test_format_order_created():
-    text, qr, order_id, need_pay = flows.format_order_created(CREATED)
+    text, qr, order_id, need_pay, pay_page = flows.format_order_created(CREATED)
     assert order_id == "7639308439653908490"
     assert need_pay is True
-    assert qr and qr.startswith("https://")
+    # 二维码用微信原生支付码（直接付），中转页作为兜底按钮
+    assert qr == "weixin://wxpay/bizpayurl?pr=ifbmtaEz1"
+    assert pay_page and pay_page.startswith("https://")
     assert "已创建订单" in text
 
 
@@ -52,9 +55,10 @@ def test_format_order_created_no_pay():
     # 被券/余额全额覆盖：needPay=false → 免扫码，不返回二维码
     covered = {"success": True, "data": {"orderIdStr": "1", "needPay": False,
                                          "payOrderQrCodeUrl": "https://x/qr", "discountPrice": 0}}
-    text, qr, order_id, need_pay = flows.format_order_created(covered)
+    text, qr, order_id, need_pay, pay_page = flows.format_order_created(covered)
     assert need_pay is False
     assert qr is None
+    assert pay_page is None
     assert "无需扫码" in text
 
 
