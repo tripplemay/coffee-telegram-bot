@@ -1,0 +1,6 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+httpx[http2]>=0.27
+# Optional fallback: if the upstream rejects httpx's TLS fingerprint (Q2 fails
+# with slider OK), swap httpx for a Chrome-impersonating client.
+# curl_cffi>=0.7

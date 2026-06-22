@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["core", "bot"]
+
+[project]
+name = "coffee-bot"
+version = "0.1.0"
+description = "Telegram 瑞幸咖啡点单机器人 (LLM agent over Luckin open-platform MCP tools)"
+requires-python = ">=3.10"
+dependencies = [
+    "python-telegram-bot==21.*",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx[http2]>=0.27",
+    "mcp>=1.8",
+    "cryptography>=42",
+    "qrcode[pil]>=7.4",
+    "pydantic-settings>=2.2",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

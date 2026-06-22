@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <!-- Phase-0 experiment knob: try WITH and WITHOUT this meta to see if Referer
+       stripping changes whether Geetest issues a challenge on our domain. -->
+  <!-- <meta name="referrer" content="no-referrer" /> -->
+  <title>瑞幸登录 Spike</title>
+  <!-- Official Geetest v4 loader: provides window.initGeetest4 -->
+  <script src="https://static.geetest.com/v4/gt4.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0; padding: 16px; background: #0b0b0f; color: #eee; }
+    h1 { font-size: 18px; }
+    .card { background: #16161d; border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+    label { display: block; font-size: 12px; color: #9aa; margin: 8px 0 4px; }
+    input { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #333; background: #0e0e14; color: #fff; font-size: 16px; }
+    button { width: 100%; padding: 13px; margin-top: 12px; border: 0; border-radius: 999px; font-size: 16px; font-weight: 600;
+             color: #fff; background: linear-gradient(90deg,#4f63ff,#2f89ff); }
+    button:disabled { opacity: .5; }
+    .row { display: flex; gap: 8px; }
+    .row > div { flex: 1; }
+    pre { white-space: pre-wrap; word-break: break-all; font-size: 11px; color: #7d8; background: #06060a; padding: 10px; border-radius: 8px; max-height: 40vh; overflow: auto; }
+    .tok { color: #ffd166; font-weight: 700; }
+    .err { color: #ff6b6b; }
+  </style>
+</head>
+<body>
+  <h1>☕ 瑞幸登录 Phase-0 验证</h1>
+
+  <div class="card">
+    <div class="row">
+      <div style="flex:0 0 80px">
+        <label>区号</label>
+        <input id="callCode" value="86" />
+      </div>
+      <div>
+        <label>手机号</label>
+        <input id="mobile" inputmode="numeric" placeholder="11 位手机号" />
+      </div>
+    </div>
+    <button id="sendBtn">获取验证码（过滑块）</button>
+  </div>
+
+  <div class="card">
+    <label>短信验证码</label>
+    <input id="code" inputmode="numeric" placeholder="6 位验证码" />
+    <button id="loginBtn">登录并获取 Token</button>
+  </div>
+
+  <div class="card">
+    <strong>结果</strong>
+    <pre id="log">等待操作…</pre>
+  </div>
+
+  <!-- hidden container the tongdun captcha widget expects -->
+  <div id="tongdunCaptcha" style="display:none"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const logEl = $("log");
+function logLine(msg, cls) {
+  const t = new Date().toISOString().slice(11, 19);
+  logEl.innerHTML += `\n[${t}] ` + (cls ? `<span class="${cls}">${msg}</span>` : msg);
+  logEl.scrollTop = logEl.scrollHeight;
+  console.log(msg);
+}
+
+// ---------- Tongdun (同盾) device fingerprint -> blackbox ----------
+window._fmOpt = {
+  display: "bind",
+  container: "#tongdunCaptcha",
+  partner: "luckincoffee",
+  appName: "luckincoffee_xcx",
+  fmb: false,
+  initialTime: Date.now(),
+  token: "luckincoffee-" + Date.now() + "-" + Math.random().toString(16).substring(2),
+  env: 1,
+  fpHost: "https://fp.tongdun.net",
+};
+(function loadTongdun() {
+  const s = document.createElement("script");
+  s.src = "https://static.tongdun.net/captcha/main/tdc.js?ver=1.0&t=" + Math.floor(Date.now() / 36e5);
+  s.async = true;
+  s.onload = () => logLine("同盾 tdc.js 已加载");
+  s.onerror = () => logLine("同盾 tdc.js 加载失败", "err");
+  document.head.appendChild(s);
+})();
+function getBlackBox() {
+  try { return (window._fmOpt.getinfo && window._fmOpt.getinfo()) || ""; }
+  catch (e) { logLine("getBlackBox 异常: " + e, "err"); return ""; }
+}
+
+// ---------- Geetest v4 slider ----------
+let geeCaptcha = null;
+function initGee() {
+  return new Promise((resolve) => {
+    if (geeCaptcha) return resolve(geeCaptcha);
+    if (typeof initGeetest4 !== "function") {
+      logLine("initGeetest4 未定义（gt4.js 未加载？）", "err");
+      return resolve(null);
+    }
+    const dpr = window.devicePixelRatio >= 2 ? 2 : 1;
+    initGeetest4({
+      captchaId: "60d64df63d51f68279ed79e899a3f812",
+      product: "bind",
+      language: "zho",
+      riskType: "slide",
+      hideSuccess: false,
+      rem: (parseFloat(document.documentElement.style.fontSize) / 100) * dpr || 1,
+    }, (captcha) => {
+      geeCaptcha = captcha;
+      captcha
+        .onReady(() => logLine("✅ Geetest onReady（滑块已就绪，域名未被拒）"))
+        .onError((e) => logLine("❌ Geetest onError: " + JSON.stringify(e), "err"));
+      resolve(captcha);
+    });
+  });
+}
+// Returns the verifyParams JSON string, or "" if cancelled/failed.
+function solveSlider() {
+  return new Promise(async (resolve) => {
+    const captcha = await initGee();
+    if (!captcha) return resolve("");
+    captcha
+      .onSuccess(() => {
+        const v = captcha.getValidate();
+        logLine("✅ 滑块通过, getValidate=" + JSON.stringify(v));
+        resolve(typeof v === "string" ? v : JSON.stringify(v));
+      })
+      .onClose(() => { logLine("滑块被关闭"); resolve(""); })
+      .onError((e) => { logLine("滑块错误: " + JSON.stringify(e), "err"); resolve(""); });
+    captcha.showCaptcha();
+  });
+}
+
+// ---------- API helpers ----------
+async function api(path, body) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await r.json().catch(() => ({}));
+  logLine(path + " -> " + JSON.stringify(data));
+  return data;
+}
+
+// ---------- Flow ----------
+async function sendCode(afterSlider = false) {
+  const mobile = $("mobile").value.trim();
+  const callCode = $("callCode").value.trim() || "86";
+  if (mobile.length < 6) return logLine("请输入手机号", "err");
+  const blackbox = getBlackBox();
+  if (!blackbox) logLine("⚠️ blackbox 为空（同盾可能未就绪），继续尝试", "err");
+
+  const res = await api("/api/validcode", { mobile, callCode, blackbox });
+
+  // content.validate === true  =>  需要先过滑块
+  if (res && res.content && res.content.validate === true) {
+    if (afterSlider) return logLine("过滑块后仍要求验证，停止以防循环", "err");
+    logLine("需要滑块验证，弹出 Geetest …");
+    const verifyParams = await solveSlider();
+    if (!verifyParams) return logLine("未取得 verifyParams，终止", "err");
+    const sv = await api("/api/sliderVerify", {
+      mobile, countryNo: callCode, blackbox, verifyParams,
+      sourceUrl: "/resource/m/sys/base/validcode",
+    });
+    if (sv && sv.content && sv.content.validate === true) {
+      logLine("滑块校验通过，重新发送验证码 …");
+      return sendCode(true);  // now the SMS should actually be sent
+    }
+    return logLine("sliderVerify 未通过", "err");
+  }
+  logLine("📩 验证码已发送（若手机收到短信即 Q2 链路前半段通）");
+}
+
+async function login() {
+  const mobile = $("mobile").value.trim();
+  const callCode = $("callCode").value.trim() || "86";
+  const code = $("code").value.trim();
+  if (code.length < 4) return logLine("请输入验证码", "err");
+  const res = await api("/api/loginAi", { mobile, code, countryNo: callCode });
+  if (!(res && res.content && res.content.userId)) {
+    return logLine("登录失败（busiCode=" + (res && res.busiCode) + "）", "err");
+  }
+  logLine("登录成功 userId=" + res.content.userId + "，换取 Token …");
+  const tok = await api("/api/getToken", {});
+  const token = tok && tok.content && tok.content.luckyMcpToken;
+  if (token) {
+    logLine("🎉 GO! luckyMcpToken = ", "tok");
+    logLine(token, "tok");
+  } else {
+    logLine("getToken 未返回 token（链路被风控拒？）", "err");
+  }
+}
+
+$("sendBtn").onclick = () => sendCode(false).catch((e) => logLine("异常: " + e, "err"));
+$("loginBtn").onclick = () => login().catch((e) => logLine("异常: " + e, "err"));
+logLine("页面已加载。建议在手机上打开（Telegram WebView 或移动端浏览器）。");
+</script>
+</body>
+</html>

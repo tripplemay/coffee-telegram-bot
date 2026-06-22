@@ -1,0 +1,14 @@
+# secrets / local config
+.env
+*.db
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+spike/.venv/
+*.egg-info/
+.pytest_cache/
+
+# os
+.DS_Store
