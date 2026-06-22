@@ -40,4 +40,5 @@ jobs:
             git reset --hard origin/main
             .venv/bin/pip install -q -e .
             sudo systemctl restart coffee-bot
+            sudo systemctl try-restart coffee-service coffee-wechat || true
             echo "deployed $(git rev-parse --short HEAD)"
