@@ -17,6 +17,8 @@ log = logging.getLogger("flows")
 
 # 视为终态的订单状态（停止轮询）
 _TERMINAL_STATUS = {60, 80, 100}  # 等待取餐 / 已完成 / 已取消
+# 视为「已支付」的状态（用于落实消费记账，排除 10待付款 / 100已取消）
+_PAID_STATUS = {20, 30, 60, 80}  # 下单成功 / 制作中 / 等待取餐 / 已完成
 
 
 def unwrap(resp: Any) -> Any:
@@ -119,10 +121,61 @@ def format_order_status(resp: Any) -> str:
     return "\n".join(lines)
 
 
+def preview_summary(resp: Any) -> str:
+    """从 previewOrder 提取一句话商品摘要，存进订单历史。"""
+    data = unwrap(resp)
+    if isinstance(data, dict):
+        items = data.get("productInfoList") or []
+        parts = [f"{it.get('name', '商品')}×{it.get('amount', 1)}" for it in items[:3]]
+        if parts:
+            return "、".join(parts)
+    return "订单"
+
+
+def cancel_succeeded(resp: Any) -> bool:
+    """cancelOrder 是否成功。容忍 data 为 True / 1 / "true"，并兜底看 success/code。"""
+    data = unwrap(resp)
+    if isinstance(data, bool):
+        return data
+    if isinstance(data, int):
+        return data == 1
+    if isinstance(data, str):
+        return data.strip().lower() == "true"
+    if isinstance(resp, dict):
+        return resp.get("success") is True and resp.get("code", 0) == 0
+    return False
+
+
+def cancel_message(resp: Any) -> str:
+    """取消失败时透传后端 msg，而非写死猜测。"""
+    if isinstance(resp, dict) and resp.get("msg"):
+        return str(resp["msg"])
+    return "可能已支付或已完成"
+
+
+def order_brief(resp: Any) -> str:
+    """queryOrderDetailInfo → 一行状态摘要（用于 /orders 列表）。"""
+    data = unwrap(resp)
+    if not isinstance(data, dict):
+        return "查询失败"
+    name = data.get("orderStatusName") or ORDER_STATUS.get(data.get("orderStatus"), "未知状态")
+    take = (data.get("takeMealCodeInfo") or {}).get("code")
+    if take and take != "生成中":
+        return f"{name} · 取餐码 {take}"
+    return name
+
+
 async def poll_order_until_ready(bot: Bot, chat_id: int, mcp: LuckinMCPClient, token: str,
-                                 order_id: str, interval: int = 20, max_minutes: int = 30) -> None:
-    """后台轮询订单状态，状态变化时推送；到终态或超时停止。"""
+                                 order_id: str, interval: int = 20, max_minutes: int = 30,
+                                 spend_user_id: Optional[int] = None,
+                                 spend_amount: Optional[float] = None) -> None:
+    """后台轮询订单状态，状态变化时推送；到终态或超时停止。
+
+    若传入 spend_user_id/spend_amount（needPay=true 的待支付单），则在订单首次进入
+    「已支付」状态时才把消费计入台账——避免未支付订单污染单日消费护栏。
+    """
     last_status = None
+    recorded = False
     deadline = max_minutes * 60
     waited = 0
     while waited < deadline:
@@ -143,5 +196,8 @@ async def poll_order_until_ready(bot: Bot, chat_id: int, mcp: LuckinMCPClient, t
                 await bot.send_message(chat_id, format_order_status(resp))
             except Exception as e:
                 log.warning("push status failed: %s", e)
+        if not recorded and spend_user_id is not None and spend_amount and status in _PAID_STATUS:
+            db.record_spend(spend_user_id, datetime.now().strftime("%Y-%m-%d"), spend_amount, order_id)
+            recorded = True
         if status in _TERMINAL_STATUS:
             return

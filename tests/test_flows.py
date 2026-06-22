@@ -63,6 +63,32 @@ def test_format_order_status():
     assert "A123" in flows.format_order_status(STATUS)
 
 
+def test_order_brief():
+    assert flows.order_brief(STATUS) == "等待取餐 · 取餐码 A123"
+    pending = {"success": True, "data": {"orderStatus": 10, "orderStatusName": "待付款",
+                                         "takeMealCodeInfo": {"code": "生成中"}}}
+    assert flows.order_brief(pending) == "待付款"  # 取餐码生成中不展示
+
+
+def test_preview_summary():
+    assert flows.preview_summary(PREVIEW) == "耶加雪菲拿铁×1"
+    assert flows.preview_summary({"data": {}}) == "订单"
+
+
+def test_cancel_succeeded():
+    env = lambda d, s=True, c=0: {"code": c, "msg": "ok", "data": d, "success": s}
+    assert flows.cancel_succeeded(env(True)) is True
+    assert flows.cancel_succeeded(env(1)) is True       # 容忍 1
+    assert flows.cancel_succeeded(env("true")) is True  # 容忍 "true"
+    assert flows.cancel_succeeded(env(False)) is False
+    assert flows.cancel_succeeded({"code": 5, "msg": "已支付", "data": None, "success": False}) is False
+
+
+def test_cancel_message():
+    assert flows.cancel_message({"code": 5, "msg": "订单已支付，不可取消"}) == "订单已支付，不可取消"
+    assert "可能" in flows.cancel_message({"data": False})
+
+
 def test_spend_guard():
     # limit is 100 (conftest). fresh user -> 50 ok, 150 blocked.
     assert flows.spend_guard(2001, 50.0) is None

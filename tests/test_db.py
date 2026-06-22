@@ -24,6 +24,29 @@ def test_delete_token():
     assert db.get_token(1002) is None
 
 
+def test_order_history():
+    db.record_order(3001, "o-100", "美式×1")
+    db.record_order(3001, "o-101", "拿铁×2")
+    db.record_order(3002, "o-200", "其它")
+    orders = db.list_orders(3001, limit=5)
+    assert [o["order_id"] for o in orders] == ["o-101", "o-100"]  # 最新在前 (rowid 兜底)
+    assert orders[0]["summary"] == "拿铁×2"
+    # upsert 覆盖 summary，不新增行
+    db.record_order(3001, "o-100", "美式×1改")
+    o100 = [o for o in db.list_orders(3001) if o["order_id"] == "o-100"][0]
+    assert o100["summary"] == "美式×1改"
+    assert len(db.list_orders(3001)) == 2
+    # COALESCE：用 None 再记不抹掉已有标签
+    db.record_order(3001, "o-100", None)
+    o100 = [o for o in db.list_orders(3001) if o["order_id"] == "o-100"][0]
+    assert o100["summary"] == "美式×1改"
+    # 取消 → 软删除，不再出现在列表
+    db.mark_order_cancelled(3001, "o-101")
+    assert [o["order_id"] for o in db.list_orders(3001)] == ["o-100"]
+    # 用户隔离
+    assert [o["order_id"] for o in db.list_orders(3002)] == ["o-200"]
+
+
 def test_spend_tracking():
     db.record_spend(1003, "2026-06-22", 16.0, "o1")
     db.record_spend(1003, "2026-06-22", 13.5, "o2")

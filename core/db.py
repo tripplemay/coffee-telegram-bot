@@ -36,6 +36,14 @@ CREATE TABLE IF NOT EXISTS spend_log (
     order_id    TEXT,
     created_at  INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS orders (
+    tg_user_id    INTEGER NOT NULL,
+    order_id      TEXT    NOT NULL,
+    summary       TEXT,
+    created_at    INTEGER NOT NULL,
+    cancelled_at  INTEGER,
+    PRIMARY KEY (tg_user_id, order_id)
+);
 """
 
 
@@ -56,6 +64,10 @@ def _connect() -> sqlite3.Connection:
 def init_db() -> None:
     with _connect() as conn:
         conn.executescript(_SCHEMA)
+        # 轻量迁移：旧库的 orders 表补 cancelled_at 列
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(orders)").fetchall()]
+        if "cancelled_at" not in cols:
+            conn.execute("ALTER TABLE orders ADD COLUMN cancelled_at INTEGER")
 
 
 def set_token(tg_user_id: int, token: str, token_date: Optional[str] = None) -> None:
@@ -96,6 +108,36 @@ def record_spend(tg_user_id: int, day: str, amount: float, order_id: Optional[st
             "INSERT INTO spend_log (tg_user_id, day, amount, order_id, created_at) VALUES (?, ?, ?, ?, ?)",
             (tg_user_id, day, amount, order_id, int(time.time())),
         )
+
+
+def record_order(tg_user_id: int, order_id: str, summary: Optional[str] = None) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO orders (tg_user_id, order_id, summary, created_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(tg_user_id, order_id) DO UPDATE SET "
+            "summary=COALESCE(excluded.summary, orders.summary)",  # 后来的 NULL 摘要不抹掉已有标签
+            (tg_user_id, order_id, summary, int(time.time())),
+        )
+
+
+def mark_order_cancelled(tg_user_id: int, order_id: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE orders SET cancelled_at=? WHERE tg_user_id=? AND order_id=?",
+            (int(time.time()), tg_user_id, order_id),
+        )
+
+
+def list_orders(tg_user_id: int, limit: int = 5) -> list[dict]:
+    """最近未取消的订单（最新在前）。仅含经本 bot 创建的单。"""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT order_id, summary, created_at FROM orders "
+            "WHERE tg_user_id=? AND cancelled_at IS NULL "
+            "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (tg_user_id, limit),
+        ).fetchall()
+    return [{"order_id": r["order_id"], "summary": r["summary"], "created_at": r["created_at"]} for r in rows]
 
 
 def spend_today(tg_user_id: int, day: str) -> float:

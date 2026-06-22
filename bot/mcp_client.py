@@ -32,6 +32,17 @@ def _first_text(result: Any) -> str:
     return ""
 
 
+def _log_tool(name: str, arguments: dict, parsed: Any) -> None:
+    """记录每次工具调用的入参与返回（订单类工具打全量，便于免扫码实验排查）。"""
+    verbose = name in ("previewOrder", "createOrder", "queryOrderDetailInfo")
+    try:
+        out = json.dumps(parsed, ensure_ascii=False)
+    except Exception:
+        out = str(parsed)
+    log.info("MCP %s args=%s -> %s", name,
+             json.dumps(arguments, ensure_ascii=False)[:300], out[: 4000 if verbose else 400])
+
+
 @dataclass
 class _Conn:
     session: ClientSession
@@ -82,7 +93,9 @@ class LuckinMCPClient:
             try:
                 async with conn.lock:
                     result = await conn.session.call_tool(name, arguments=arguments)
-                return self._parse(result)
+                parsed = self._parse(result)
+                _log_tool(name, arguments, parsed)
+                return parsed
             except MCPToolError:
                 raise  # 业务错误不重试
             except Exception as e:  # 连接/协议错误 → 重连重试一次
