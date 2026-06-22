@@ -32,7 +32,7 @@ from telegram.ext import (
 from bot import flows, ui
 from bot.agent import OrderingAgent
 from bot.mcp_client import LuckinMCPClient
-from core import db
+from core import asr, db
 from core.config import get_settings, login_base_url
 from core.geo import wgs84_to_gcj02
 
@@ -251,7 +251,34 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text0 = (update.message.text or "").strip()
+    await _handle_text(update, context, (update.message.text or "").strip())
+
+
+async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """语音消息 → 转写 → 回显 → 当作文字走同一套点单逻辑（确认护栏不变）。"""
+    voice = update.message.voice or update.message.audio
+    if voice is None:
+        return
+    if not asr.asr_enabled():
+        await update.message.reply_text("语音功能还没开启（需配置云 ASR），先打字告诉我吧～")
+        return
+    await context.bot.send_chat_action(update.effective_chat.id, "typing")
+    try:
+        f = await context.bot.get_file(voice.file_id)
+        audio = bytes(await f.download_as_bytearray())
+        text = await asr.transcribe(audio)
+    except Exception as e:
+        log.warning("voice transcribe failed: %s", e)
+        await update.message.reply_text("没听清，要不打字告诉我？")
+        return
+    if not text:
+        await update.message.reply_text("没听清，要不打字告诉我？")
+        return
+    await update.message.reply_text(f"🎧 听到：{text}")
+    await _handle_text(update, context, text)
+
+
+async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text0: str) -> None:
     if text0 in ("福利", "领券", "免费券", "领福利"):
         await cmd_coupon(update, context)
         return
@@ -276,7 +303,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await cmd_here(update, context)  # 从无位置 → 主动弹一键定位，别让 LLM 干巴巴地要
             return
     messages = context.user_data.get("messages") or AGENT.new_conversation(context.user_data.get("location"))
-    messages.append({"role": "user", "content": update.message.text})
+    messages.append({"role": "user", "content": text0})
     await context.bot.send_chat_action(update.effective_chat.id, "typing")
     try:
         result = await AGENT.step(messages, rec.token)
@@ -390,6 +417,7 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(on_cancel_do, pattern=r"^cxldo:"))
     app.add_handler(CallbackQueryHandler(on_cancel_abort, pattern=r"^cxlno$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, on_voice))
     return app
 
 

@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     bridge_secret: str = ""  # 渠道服务 /message 的共享密钥（微信桥接用），留空则不校验
     amap_key: str = ""       # 高德 Web 服务 key，用于「地址→GCJ-02 坐标」地理编码
     wechat_push_url: str = ""  # 微信 bridge 入站推送端点基址（如 http://127.0.0.1:8300），用于登录/定位成功回推
+    # ---- 语音转写（云 ASR；网关无 ASR 模态，必须外接）----
+    asr_provider: str = ""    # "" 关闭 | dashscope(阿里) | tencent(腾讯) | iflytek(讯飞)
+    asr_api_key: str = ""     # 单 key 厂商（阿里 DashScope）
+    asr_app_id: str = ""      # 讯飞 APPID / 腾讯 SecretId
+    asr_api_secret: str = ""  # 讯飞 APISecret / 腾讯 SecretKey
 
 
 @lru_cache
