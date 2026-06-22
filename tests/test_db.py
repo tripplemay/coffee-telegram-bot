@@ -49,11 +49,24 @@ def test_order_history():
 
 def test_login_nonce():
     db.create_login_nonce("n1", 5005)
-    assert db.consume_login_nonce("n1") == 5005
+    rec = db.consume_login_nonce("n1")
+    assert rec is not None and rec.user_key == 5005
+    assert rec.channel is None and rec.push_target is None  # 未指定渠道时为空
     assert db.consume_login_nonce("n1") is None  # 单次：第二次取不到
     assert db.consume_login_nonce("nope") is None
-    db.create_login_nonce("n2", 6006)
-    assert db.consume_login_nonce("n2", max_age=-1) is None  # 过期
+    # 渠道 + 回推目标随 nonce 一并保存、取回
+    db.create_login_nonce("n2", 6006, channel="tg", push_target="6006")
+    rec2 = db.consume_login_nonce("n2")
+    assert rec2.user_key == 6006 and rec2.channel == "tg" and rec2.push_target == "6006"
+    db.create_login_nonce("n3", 7007)
+    assert db.consume_login_nonce("n3", max_age=-1) is None  # 过期
+    # peek：校验存在/未过期但不删除（发短信前的轻量准入）
+    db.create_login_nonce("n4", 7008)
+    assert db.peek_login_nonce("n4") is True
+    assert db.peek_login_nonce("n4") is True  # 不删除，可重复 peek
+    assert db.peek_login_nonce("n4", max_age=-1) is False  # 过期
+    assert db.peek_login_nonce("nope") is False
+    assert db.peek_login_nonce("") is False
 
 
 def test_location_persistence():

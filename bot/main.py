@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+import time
 from datetime import datetime
 
 from telegram import (
@@ -33,6 +34,7 @@ from bot.agent import OrderingAgent
 from bot.mcp_client import LuckinMCPClient
 from core import db
 from core.config import get_settings, login_base_url
+from core.geo import wgs84_to_gcj02
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("bot")
@@ -45,13 +47,54 @@ def _require_token(user_id: int):
     return db.get_token(user_id)
 
 
+def _login_kb(user_id: int, chat_id: int):
+    """生成带一次性 nonce 的手机号登录按钮，并把回推目标(本 TG 聊天)绑到该 nonce。
+
+    未配置登录页则返回 None（调用方退回粘贴 token 提示）。
+    """
+    base = login_base_url()
+    if not base:
+        return None
+    nonce = secrets.token_urlsafe(12)
+    db.create_login_nonce(nonce, user_id, channel="tg", push_target=str(chat_id))
+    return ui.login_keyboard(base, nonce)
+
+
+def _coupon_login_kb(user_id: int, chat_id: int):
+    """领券登录（消费版 H5）按钮 + 绑定 nonce。未配置登录页返回 None。"""
+    base = login_base_url()
+    if not base:
+        return None
+    nonce = secrets.token_urlsafe(12)
+    db.create_login_nonce(nonce, user_id, channel="tg", push_target=str(chat_id))
+    return InlineKeyboardMarkup([[InlineKeyboardButton(
+        "🎁 绑定领券登录", url=f"{base}/coupon-login?t={nonce}")]])
+
+
+async def cmd_coupon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """领取每周免费福利券。未绑定领券登录则先给绑定链接（带风险提示）。只领免费券，绝不扣钱。"""
+    from core import coupon
+    user_id = update.effective_user.id
+    res = await coupon.run_claim_for_user(user_id, coupon.today_cst(), int(time.time()))
+    if res.get("need_login"):
+        kb = _coupon_login_kb(user_id, update.effective_chat.id)
+        if not kb:
+            await update.message.reply_text("领券登录页未配置，暂时用不了。")
+            return
+        await update.message.reply_text(
+            "领免费券需先单独绑定瑞幸「领券登录」（与点单登录不同源）。\n"
+            "⚠️ 第三方代领属灰色地带，仅个人低频、只领免费券、绝不扣钱。\n点下方按钮绑定（手机号+短信）：",
+            reply_markup=kb)
+        return
+    await update.message.reply_text(coupon.format_claim_result(res))
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    s = get_settings()
-    kb = ui.login_keyboard(s.public_base_url)
+    kb = _login_kb(update.effective_user.id, update.effective_chat.id)
     text = (
         "☕ 欢迎使用瑞幸点单助手！\n\n"
         "1) 先登录瑞幸账号"
-        + ("（点下方按钮）" if kb else "：把你的 Token 发给我 `/login <token>`")
+        + ("（点下方按钮，手机号+短信，免粘贴）" if kb else "：把你的 Token 发给我 `/login <token>`")
         + "\n2) 点「📍 发送我的位置」分享定位\n"
         "3) 直接说想喝什么，比如「来杯热的生椰拿铁」\n\n"
         "下单前我会显示价格让你确认，不会乱扣款 👍"
@@ -67,14 +110,10 @@ async def cmd_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("✅ 登录成功，已安全保存。分享位置后就能点单啦～",
                                         reply_markup=ui.location_keyboard())
         return
-    base = login_base_url()  # 无参数 → 手机号登录链接
-    if not base:
+    kb = _login_kb(update.effective_user.id, update.effective_chat.id)  # 无参数 → 手机号登录链接
+    if not kb:
         await update.message.reply_text("登录页未配置。用法：/login <你的瑞幸Token>")
         return
-    nonce = secrets.token_urlsafe(12)
-    db.create_login_nonce(nonce, update.effective_user.id)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "🔑 手机号登录（免粘贴）", url=f"{base}/login?t={nonce}")]])
     await update.message.reply_text("点下方按钮用手机号登录（填手机号 + 短信验证码）。链接 15 分钟内有效。",
                                     reply_markup=kb)
 
@@ -182,16 +221,32 @@ async def on_cancel_abort(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     loc = update.message.location
-    context.user_data["location"] = (loc.longitude, loc.latitude)
-    context.user_data["messages"] = AGENT.new_conversation((loc.longitude, loc.latitude))
+    # Telegram 原生定位是 WGS-84，瑞幸/高德按 GCJ-02 检索门店 → 必须转换，否则偏 100~500m
+    coords = wgs84_to_gcj02(loc.longitude, loc.latitude)
+    context.user_data["location"] = coords
+    context.user_data["messages"] = AGENT.new_conversation(coords)
+    db.set_location(update.effective_user.id, coords[0], coords[1], "我的位置")  # 落库，重启不丢
     await update.message.reply_text("📍 位置已记录，想喝点什么？", reply_markup=ReplyKeyboardRemove())
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if (update.message.text or "").strip() in ("福利", "领券", "免费券", "领福利"):
+        await cmd_coupon(update, context)
+        return
     rec = _require_token(update.effective_user.id)
     if not rec:
-        await update.message.reply_text("请先登录：/login <你的瑞幸Token>（或用 /start 的登录按钮）。")
+        kb = _login_kb(update.effective_user.id, update.effective_chat.id)
+        await update.message.reply_text(
+            "请先登录瑞幸账号👇（也可 `/login <Token>` 粘贴登录）。" if kb
+            else "请先登录：/login <你的瑞幸Token>。",
+            reply_markup=kb)
         return
+    # 内存没有位置时，回落到上次落库的位置（重启/换会话也不用重设）
+    if not context.user_data.get("location"):
+        saved = db.get_location(update.effective_user.id)
+        if saved:
+            context.user_data["location"] = (saved["lng"], saved["lat"])
+            context.user_data["messages"] = AGENT.new_conversation((saved["lng"], saved["lat"]))
     messages = context.user_data.get("messages") or AGENT.new_conversation(context.user_data.get("location"))
     messages.append({"role": "user", "content": update.message.text})
     await context.bot.send_chat_action(update.effective_chat.id, "typing")
@@ -299,6 +354,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("logout", cmd_logout))
     app.add_handler(CommandHandler("orders", cmd_orders))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
+    app.add_handler(CommandHandler("coupon", cmd_coupon))
     app.add_handler(MessageHandler(filters.LOCATION, on_location))
     app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^order:"))
     app.add_handler(CallbackQueryHandler(on_cancel_select, pattern=r"^cancel:"))

@@ -19,7 +19,8 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from core import db
+from core import db, push
+from core.coupon import ConsumerClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("weblogin")
@@ -36,7 +37,21 @@ BASE_HEADERS = {
 }
 
 LOGIN_HTML = (Path(__file__).parent / "login.html").read_text(encoding="utf-8")
+COUPON_LOGIN_HTML = (Path(__file__).parent / "coupon_login.html").read_text(encoding="utf-8")
 SESSIONS: dict[str, dict] = {}  # sid -> {client, csrf}
+# 领券登录客户端：按**一次性 nonce**(登录票据)隔离，绝不用共享 sid —— 否则两个并发用户会串号/抢验证码
+CONSUMER_CLIENTS: dict[str, ConsumerClient] = {}  # nonce -> 消费版 H5 客户端
+
+
+async def _consumer_client(key: str) -> ConsumerClient:
+    cl = CONSUMER_CLIENTS.get(key)
+    if cl is None:
+        if len(CONSUMER_CLIENTS) > 500:  # 防无界增长：淘汰最早的一个
+            CONSUMER_CLIENTS.pop(next(iter(CONSUMER_CLIENTS)), None)
+        cl = ConsumerClient()
+        await cl.start()  # GET 首页拿 csrf + cookie
+        CONSUMER_CLIENTS[key] = cl
+    return cl
 
 
 def _sid(req: Request) -> str:
@@ -132,12 +147,64 @@ async def get_token(req: Request):
     nonce = (b or {}).get("t", "")
     stored = False
     if token and nonce:
-        user_key = db.consume_login_nonce(nonce)
-        if user_key is not None:
-            db.set_token(user_key, token, str(content.get("luckyMcpTokenDate") or ""))
+        rec = db.consume_login_nonce(nonce)
+        if rec is not None:
+            db.set_token(rec.user_key, token, str(content.get("luckyMcpTokenDate") or ""))
             stored = True
-            log.info("token stored for user_key %s via nonce", user_key)
+            log.info("token stored for user_key %s via nonce", rec.user_key)
+            # 登录成功 → 回推到来源渠道（聊天窗口给反馈，不再只在网页显示 ✅）
+            try:
+                await push.push_to_channel(
+                    rec.channel, rec.push_target,
+                    "✅ 已登录瑞幸账号，可以开始点单啦～发个位置或直接说想喝什么。")
+            except Exception as e:
+                log.warning("login push failed: %s", e)
     return JSONResponse({"ok": bool(token), "stored": stored})
+
+
+@app.get("/coupon-login", response_class=HTMLResponse)
+async def coupon_login_page(req: Request):
+    resp = HTMLResponse(COUPON_LOGIN_HTML)
+    if not req.cookies.get("lsid"):
+        resp.set_cookie("lsid", uuid.uuid4().hex, httponly=True, samesite="lax", secure=True)
+    return resp
+
+
+@app.post("/api/coupon/sendcode")
+async def coupon_sendcode(req: Request):
+    b = await req.json()
+    token = str((b or {}).get("t") or "").strip()
+    if not db.peek_login_nonce(token):  # 必须带 bot 下发的有效票据，挡随机号码 SMS 滥用
+        return JSONResponse({"ok": False, "msg": "登录链接无效或已过期，请回机器人重发 /福利"}, status_code=400)
+    cl = await _consumer_client(token)
+    return JSONResponse(await cl.send_code(str(b["mobile"]).strip()))
+
+
+@app.post("/api/coupon/login")
+async def coupon_login(req: Request):
+    b = await req.json()
+    token = str((b or {}).get("t") or "").strip()
+    cl = CONSUMER_CLIENTS.get(token)  # 必须是 sendcode 时建立的同一会话（同 nonce）
+    if not cl:
+        return JSONResponse({"ok": False, "msg": "请先获取验证码"}, status_code=400)
+    resp = await cl.login(str(b["mobile"]).strip(), str(b["code"]).strip())
+    ok = isinstance(resp, dict) and resp.get("status") == "SUCCESS" and resp.get("loginState") == 1
+    stored = False
+    if ok:
+        rec = db.consume_login_nonce(token)
+        if rec is not None:
+            db.set_consumer_session(rec.user_key, cl.session.to_json())
+            stored = True
+            log.info("consumer session stored for user_key %s", rec.user_key)
+            try:
+                await push.push_to_channel(
+                    rec.channel, rec.push_target,
+                    "✅ 领券登录已绑定！发『/福利』就能领每周免费券（只领免费、不会扣钱）。")
+            except Exception as e:
+                log.warning("coupon login push failed: %s", e)
+        CONSUMER_CLIENTS.pop(token, None)  # 登录成功即清掉内存会话（防泄漏/复用）；失败则保留供重试验证码
+    return JSONResponse({"ok": ok, "stored": stored,
+                         "msg": resp.get("msg", "") if isinstance(resp, dict) else ""})
 
 
 @app.get("/health")

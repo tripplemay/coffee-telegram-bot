@@ -16,6 +16,7 @@ import hashlib
 import logging
 import re
 import secrets
+import time
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -31,7 +32,7 @@ from pydantic import BaseModel
 from bot import flows
 from bot.agent import OrderingAgent
 from bot.mcp_client import LuckinMCPClient
-from core import db
+from core import coupon, db
 from core.config import get_settings, login_base_url
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -129,11 +130,14 @@ class ChannelCore:
             if not base:
                 return [_text("登录页未配置。可先用 /login <你的瑞幸Token> 粘贴登录。")]
             nonce = secrets.token_urlsafe(12)
-            db.create_login_nonce(nonce, _uid(key))
+            db.create_login_nonce(nonce, _uid(key), channel="wx", push_target=key)
             return [_text(f"点链接用手机号登录（填手机号+短信验证码，免粘贴 Token）：\n{base}/login?t={nonce}\n链接 15 分钟内有效。")]
 
         if text in ("/start", "/help", "help", "你好", "在吗"):
             return [_text(WELCOME)]
+
+        if text in ("/福利", "/coupon", "福利", "领券", "免费券", "领福利"):
+            return await self._coupon(key)
 
         rec = db.get_token(_uid(key))
         if not rec:
@@ -260,6 +264,21 @@ class ChannelCore:
         if closing:
             acts.append(_text(closing))
         return acts
+
+    async def _coupon(self, key: str) -> list[dict]:
+        """领取每周免费福利券。未绑定领券登录则给带风险提示的绑定链接。只领免费券，绝不扣钱。"""
+        uid = _uid(key)
+        res = await coupon.run_claim_for_user(uid, coupon.today_cst(), int(time.time()))
+        if res.get("need_login"):
+            base = login_base_url()
+            if not base:
+                return [_text("领券登录页未配置，暂时用不了。")]
+            nonce = secrets.token_urlsafe(12)
+            db.create_login_nonce(nonce, uid, channel="wx", push_target=key)
+            return [_text("领免费券需先绑定瑞幸「领券登录」（与点单登录不同源）。\n"
+                          "⚠️ 第三方代领属灰色地带，仅个人低频、只领免费券、绝不扣钱。\n"
+                          f"点链接绑定（手机号+短信）：\n{base}/coupon-login?t={nonce}\n链接 15 分钟内有效。")]
+        return [_text(coupon.format_claim_result(res))]
 
     async def _geocode(self, address: str) -> Optional[tuple]:
         """高德地理编码：地址 → (lng, lat, formatted)，GCJ-02（与瑞幸一致）。未配 key/失败返回 None。"""

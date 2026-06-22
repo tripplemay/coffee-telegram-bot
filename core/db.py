@@ -54,6 +54,19 @@ CREATE TABLE IF NOT EXISTS user_location (
 CREATE TABLE IF NOT EXISTS login_nonce (
     nonce       TEXT    PRIMARY KEY,
     user_key    INTEGER NOT NULL,
+    channel     TEXT,                 -- 'tg' | 'wx'：登录成功后往哪个渠道回推
+    push_target TEXT,                 -- 原生推送目标（tg=chat_id，wx=原始 user_key 串）
+    created_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS consumer_session (
+    user_key    INTEGER PRIMARY KEY,  -- 消费版 H5 (m.lkcoffee.com) 登录态，用于优惠券领取
+    enc_session BLOB    NOT NULL,      -- Fernet 加密的 ConsumerSession JSON
+    updated_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS coupon_claim_log (
+    user_key    INTEGER NOT NULL,     -- 领券限频用：每用户每日次数 + 最近一次时间
+    day         TEXT    NOT NULL,
+    claimed     INTEGER NOT NULL,
     created_at  INTEGER NOT NULL
 );
 """
@@ -80,6 +93,12 @@ def init_db() -> None:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(orders)").fetchall()]
         if "cancelled_at" not in cols:
             conn.execute("ALTER TABLE orders ADD COLUMN cancelled_at INTEGER")
+        # 轻量迁移：旧库的 login_nonce 表补 channel / push_target 列（登录成功回推用）
+        ncols = [r[1] for r in conn.execute("PRAGMA table_info(login_nonce)").fetchall()]
+        if "channel" not in ncols:
+            conn.execute("ALTER TABLE login_nonce ADD COLUMN channel TEXT")
+        if "push_target" not in ncols:
+            conn.execute("ALTER TABLE login_nonce ADD COLUMN push_target TEXT")
 
 
 def set_token(tg_user_id: int, token: str, token_date: Optional[str] = None) -> None:
@@ -112,6 +131,62 @@ def get_token(tg_user_id: int) -> Optional[TokenRecord]:
 def delete_token(tg_user_id: int) -> None:
     with _connect() as conn:
         conn.execute("DELETE FROM user_tokens WHERE tg_user_id=?", (tg_user_id,))
+
+
+def set_consumer_session(user_key: int, session_json: str) -> None:
+    """加密保存消费版 H5 登录态（优惠券领取用）。"""
+    enc = _fernet().encrypt(session_json.encode())
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO consumer_session (user_key, enc_session, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(user_key) DO UPDATE SET enc_session=excluded.enc_session, updated_at=excluded.updated_at",
+            (user_key, enc, int(time.time())),
+        )
+
+
+def get_consumer_session(user_key: int) -> Optional[str]:
+    """取回消费版登录态 JSON；无/损坏返回 None。"""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT enc_session FROM consumer_session WHERE user_key=?", (user_key,)
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        return _fernet().decrypt(row["enc_session"]).decode()
+    except InvalidToken:
+        return None
+
+
+def delete_consumer_session(user_key: int) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM consumer_session WHERE user_key=?", (user_key,))
+
+
+def record_coupon_claim(user_key: int, day: str, claimed: int) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO coupon_claim_log (user_key, day, claimed, created_at) VALUES (?, ?, ?, ?)",
+            (user_key, day, claimed, int(time.time())),
+        )
+
+
+def coupon_claims_today(user_key: int, day: str) -> int:
+    """今日已发起的领取次数（限频用，含领到 0 张的尝试）。"""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM coupon_claim_log WHERE user_key=? AND day=?", (user_key, day)
+        ).fetchone()
+    return int(row["n"] or 0)
+
+
+def last_coupon_claim_at(user_key: int) -> Optional[int]:
+    """最近一次领取尝试的时间戳（最小间隔限频用）；从未则 None。"""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT MAX(created_at) AS t FROM coupon_claim_log WHERE user_key=?", (user_key,)
+        ).fetchone()
+    return int(row["t"]) if row and row["t"] is not None else None
 
 
 def record_spend(tg_user_id: int, day: str, amount: float, order_id: Optional[str]) -> None:
@@ -152,24 +227,47 @@ def list_orders(tg_user_id: int, limit: int = 5) -> list[dict]:
     return [{"order_id": r["order_id"], "summary": r["summary"], "created_at": r["created_at"]} for r in rows]
 
 
-def create_login_nonce(nonce: str, user_key: int) -> None:
-    """登录页用：把一次性登录链接绑定到 bot 用户(已折算成 db key)。"""
+@dataclass(frozen=True)
+class NonceRecord:
+    user_key: int
+    channel: Optional[str]       # 'tg' | 'wx'：回推到哪个渠道
+    push_target: Optional[str]   # 原生推送目标（tg=chat_id，wx=原始 user_key 串）
+
+
+def create_login_nonce(nonce: str, user_key: int, channel: Optional[str] = None,
+                       push_target: Optional[str] = None) -> None:
+    """登录页用：把一次性登录链接绑定到 bot 用户(已折算成 db key)。
+
+    channel/push_target 用于登录成功后把"✅ 已登录"回推到来源渠道（见 core/push.py）。
+    """
     with _connect() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO login_nonce (nonce, user_key, created_at) VALUES (?, ?, ?)",
-            (nonce, user_key, int(time.time())),
+            "INSERT OR REPLACE INTO login_nonce (nonce, user_key, channel, push_target, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (nonce, user_key, channel, push_target, int(time.time())),
         )
 
 
-def consume_login_nonce(nonce: str, max_age: int = 900) -> Optional[int]:
-    """取出并删除 nonce，返回绑定的 user_key（单次、15 分钟内有效）。"""
+def consume_login_nonce(nonce: str, max_age: int = 900) -> Optional[NonceRecord]:
+    """取出并删除 nonce，返回绑定信息（单次、默认 15 分钟内有效）。过期/不存在返回 None。"""
     with _connect() as conn:
-        row = conn.execute("SELECT user_key, created_at FROM login_nonce WHERE nonce=?", (nonce,)).fetchone()
+        row = conn.execute(
+            "SELECT user_key, channel, push_target, created_at FROM login_nonce WHERE nonce=?", (nonce,)
+        ).fetchone()
         if row:
             conn.execute("DELETE FROM login_nonce WHERE nonce=?", (nonce,))
     if not row or int(time.time()) - row["created_at"] > max_age:
         return None
-    return row["user_key"]
+    return NonceRecord(row["user_key"], row["channel"], row["push_target"])
+
+
+def peek_login_nonce(nonce: str, max_age: int = 900) -> bool:
+    """只校验 nonce 是否存在且未过期（不删除）。用于发短信前的轻量准入，防 SMS 滥用。"""
+    if not nonce:
+        return False
+    with _connect() as conn:
+        row = conn.execute("SELECT created_at FROM login_nonce WHERE nonce=?", (nonce,)).fetchone()
+    return bool(row) and int(time.time()) - row["created_at"] <= max_age
 
 
 def set_location(tg_user_id: int, lng: float, lat: float, label: Optional[str] = None) -> None:

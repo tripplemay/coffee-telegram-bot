@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>瑞幸领券登录</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0; padding: 18px; background: #0b0b0f; color: #eee; }
+    h1 { font-size: 19px; }
+    .sub { color: #9aa; font-size: 13px; margin-bottom: 14px; }
+    .warn { background: #2a1d0e; border: 1px solid #6b4e1e; color: #f0c674; border-radius: 10px; padding: 12px; font-size: 12.5px; line-height: 1.6; margin-bottom: 14px; }
+    .card { background: #16161d; border-radius: 12px; padding: 16px; }
+    label { display: block; font-size: 12px; color: #9aa; margin: 10px 0 4px; }
+    input { width: 100%; padding: 13px; border-radius: 8px; border: 1px solid #333; background: #0e0e14; color: #fff; font-size: 16px; }
+    .row { display: flex; gap: 8px; }
+    .chk { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0; font-size: 13px; color: #cdd; }
+    .chk input { width: auto; margin-top: 2px; }
+    button { width: 100%; padding: 14px; margin-top: 14px; border: 0; border-radius: 999px; font-size: 16px; font-weight: 600;
+             color: #fff; background: linear-gradient(90deg,#4f63ff,#2f89ff); }
+    button:disabled { opacity: .45; }
+    #ok { display:none; text-align:center; padding:28px 12px; }
+    #ok .big { font-size: 40px; } #ok .t { font-size: 18px; margin-top: 10px; }
+    pre { white-space: pre-wrap; word-break: break-all; font-size: 11px; color: #7d8; margin-top: 12px; }
+    .err { color: #ff6b6b; }
+  </style>
+</head>
+<body>
+  <h1>🎁 瑞幸领券登录</h1>
+  <div class="sub">绑定后，机器人可帮你领取「每周惊喜券包」里的免费福利券。</div>
+
+  <div class="warn">
+    ⚠️ 风险须知：第三方代领属瑞幸用户协议的灰色地带，<b>频繁/批量可能触发风控、导致券作废甚至账号受限</b>。
+    本功能仅做<b>个人、低频、拟人</b>领取（每周一次性的免费券为主），且<b>只领免费券、绝不触发任何付费购买</b>。请知悉风险后自愿使用。
+  </div>
+
+  <div class="card" id="form">
+    <div class="row">
+      <div style="flex:0 0 78px"><label>区号</label><input id="callCode" value="86" /></div>
+      <div style="flex:1"><label>手机号</label><input id="mobile" inputmode="numeric" placeholder="11 位手机号" /></div>
+    </div>
+    <button id="sendBtn">获取验证码</button>
+    <label>短信验证码</label>
+    <input id="code" inputmode="numeric" placeholder="6 位验证码" />
+    <label class="chk"><input type="checkbox" id="agree" /><span>我已阅读并知悉上述风险，自愿绑定领券登录。</span></label>
+    <button id="loginBtn" disabled>登录并绑定</button>
+    <pre id="log"></pre>
+  </div>
+
+  <div class="card" id="ok"><div class="big">✅</div><div class="t">领券登录已绑定！</div><div class="sub" style="margin-top:8px">回到机器人发『/福利』即可领取。可以关掉本页了。</div></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const NONCE = new URLSearchParams(location.search).get("t") || "";
+function logLine(m, cls){ const t=new Date().toTimeString().slice(0,8); $("log").innerHTML += `\n[${t}] `+(cls?`<span class="${cls}">${m}</span>`:m); }
+async function api(path, body){ const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})}); return r.json().catch(()=>({})); }
+
+$("agree").onchange = () => { $("loginBtn").disabled = !$("agree").checked; };
+
+async function sendCode(){
+  const mobile=$("mobile").value.trim();
+  if(mobile.length<6) return logLine("请输入手机号","err");
+  if(!NONCE) return logLine("缺少登录票据，请从机器人 /福利 链接进入","err");
+  const res=await api("/api/coupon/sendcode",{mobile,t:NONCE});
+  if(res && res.ok===false) return logLine(res.msg||"获取验证码失败","err");
+  if(res && res.content && res.content.validate===true) return logLine("该账号需要滑块验证，暂不支持","err");
+  logLine("📩 验证码已发送");
+}
+async function login(){
+  if(!$("agree").checked) return logLine("请先勾选风险知悉","err");
+  const mobile=$("mobile").value.trim(), code=$("code").value.trim();
+  if(code.length<4) return logLine("请输入验证码","err");
+  const r=await api("/api/coupon/login",{mobile,code,t:NONCE});
+  if(r && r.stored){ $("form").style.display="none"; $("ok").style.display="block"; }
+  else if(r && r.ok){ logLine("登录成功但绑定失败（链接可能过期，请回机器人重发）","err"); }
+  else { logLine("登录失败："+((r&&r.msg)||""),"err"); }
+}
+$("sendBtn").onclick=()=>sendCode().catch(e=>logLine("异常:"+e,"err"));
+$("loginBtn").onclick=()=>login().catch(e=>logLine("异常:"+e,"err"));
+if(!NONCE) logLine("缺少登录票据(nonce)，请从机器人的 /福利 链接进入。","err");
+</script>
+</body>
+</html>

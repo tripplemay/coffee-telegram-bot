@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     daily_spend_limit: float = 100.0
     bridge_secret: str = ""  # 渠道服务 /message 的共享密钥（微信桥接用），留空则不校验
     amap_key: str = ""       # 高德 Web 服务 key，用于「地址→GCJ-02 坐标」地理编码
+    wechat_push_url: str = ""  # 微信 bridge 入站推送端点基址（如 http://127.0.0.1:8300），用于登录/定位成功回推
 
 
 @lru_cache
