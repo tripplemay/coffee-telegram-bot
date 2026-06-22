@@ -41,16 +41,13 @@ async function callService(userKey, text, msgId) {
 
 async function getClient() {
   const saved = loadSession();
-  if (saved?.botToken && saved?.userId) {
-    console.log("复用已保存的微信会话。userId:", saved.userId);
+  if (saved?.botToken) {
+    console.log("复用已保存的微信会话。userId:", saved.userId, "botId:", saved.accountId);
     return {
       client: WxLinkClient.fromAccount({ baseUrl: saved.baseUrl, token: saved.botToken }, { botAgent: BOT_AGENT }),
       cursor: saved.cursor || "",
-      selfId: saved.userId,
+      selfId: saved.accountId, // 防回声：过滤机器人自身(@im.bot)，绝不能用 userId(小号本人=合法用户)
     };
-  }
-  if (saved?.botToken && !saved?.userId) {
-    console.warn("⚠️ 旧会话缺少 userId（无法可靠过滤自身消息），将重新登录。");
   }
   const login = await loginWithQR({
     onQRCode: (url) => {
@@ -63,8 +60,8 @@ async function getClient() {
       ask(retry ? "配对码不匹配，重新输入手机微信显示的数字: " : "请输入手机微信显示的配对数字: "),
   });
   saveSession({ ...login, cursor: "" });
-  console.log("✅ 登录成功，会话已保存。userId:", login.userId);
-  return { client: new WxLinkClient({ baseUrl: login.baseUrl, token: login.botToken, botAgent: BOT_AGENT }), cursor: "", selfId: login.userId };
+  console.log("✅ 登录成功，会话已保存。userId:", login.userId, "botId:", login.accountId);
+  return { client: new WxLinkClient({ baseUrl: login.baseUrl, token: login.botToken, botAgent: BOT_AGENT }), cursor: "", selfId: login.accountId };
 }
 
 async function main() {
