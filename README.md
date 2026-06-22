@@ -1,6 +1,6 @@
 # ☕ 瑞幸咖啡点单机器人 · Telegram + 微信
 
-![ci](https://github.com/tripplemay/coffee-telegram-bot/actions/workflows/ci.yml/badge.svg)
+![ci](https://github.com/tripplemay/luckin-coffee-bot/actions/workflows/ci.yml/badge.svg)
 
 用自然语言在 **Telegram** 或 **微信** 里点瑞幸咖啡。同一套 LLM agent 大脑编排瑞幸开放平台的
 MCP 工具，完成「找店 → 选品 → 预览 → 确认 → 下单 → 支付 → 取餐」全流程。
