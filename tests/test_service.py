@@ -60,7 +60,7 @@ async def test_wechat_order_flow_and_guardrail(monkeypatch):
     assert "请先登录" in (await core.handle(u, "来杯生椰拿铁"))[0]["text"]
     assert "登录成功" in (await core.handle(u, "/login TESTTOKEN"))[0]["text"]
     assert "/loc" in (await core.handle(u, "来杯生椰拿铁"))[0]["text"]
-    assert "位置已记录" in (await core.handle(u, "/loc 116.39,39.98"))[0]["text"]
+    assert "已定位" in (await core.handle(u, "/loc 116.39,39.98"))[0]["text"]
 
     # 下单 → 必须停在确认态，createOrder 未执行
     r = await core.handle(u, "来杯热的生椰拿铁")
@@ -96,10 +96,12 @@ async def test_loc_parsing_and_range(monkeypatch):
     core, _ = _wire(monkeypatch, {"role": "assistant", "content": "hi", "tool_calls": None})
     u = "wx_user_3"
     await core.handle(u, "/login T")
-    assert "用法" in (await core.handle(u, "/loc abc"))[0]["text"]
-    # 纬度越界（116 当纬度）应拒绝，不静默落库
-    assert "用法" in (await core.handle(u, "/loc 39.98,116.39"))[0]["text"]
-    assert "位置已记录" in (await core.handle(u, "/loc 116.392, 39.982"))[0]["text"]
+    # 坐标形态但纬度越界 → 范围错误
+    assert "范围" in (await core.handle(u, "/loc 39.98,116.39"))[0]["text"]
+    # 非坐标(地址) 且测试环境无 AMAP_KEY → 提示
+    assert "地址" in (await core.handle(u, "/loc 安贞环宇荟"))[0]["text"]
+    # 合法坐标 → 已定位
+    assert "已定位" in (await core.handle(u, "/loc 116.392, 39.982"))[0]["text"]
 
 
 @pytest.mark.asyncio
@@ -118,6 +120,29 @@ async def test_pending_order_is_modal(monkeypatch):
     assert "待确认" in r[0]["text"]
     assert "createOrder" not in mcp.calls
     assert "已取消" in (await core.handle(u, "取消"))[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_loc_geocode_and_remember(monkeypatch):
+    core, mcp = _wire(
+        monkeypatch,
+        _tc("queryShopList", {"longitude": 116.39, "latitude": 39.98}),
+        _tc("searchProductForMcp", {"deptId": 1, "query": "美式"}),
+        {"role": "assistant", "content": "给你找到附近门店啦", "tool_calls": None},
+    )
+    u = "wx_geo"
+    await core.handle(u, "/login T")
+    # 地址 → 地理编码（mock 高德）
+    async def fake_geo(addr):
+        return (116.39, 39.98, "北京安贞环宇荟")
+    monkeypatch.setattr(core, "_geocode", fake_geo)
+    r = await core.handle(u, "/loc 安贞环宇荟")
+    assert "已定位" in r[0]["text"] and "北京安贞环宇荟" in r[0]["text"]
+
+    # 模拟服务重启：内存 state 清空，但 db 记着位置 → 直接点单不再要求设位置
+    core._states.clear()
+    r2 = await core.handle(u, "来杯美式")
+    assert r2[0]["type"] == "text" and "先发" not in r2[0]["text"]
 
 
 @pytest.mark.asyncio

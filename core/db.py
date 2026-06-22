@@ -44,6 +44,13 @@ CREATE TABLE IF NOT EXISTS orders (
     cancelled_at  INTEGER,
     PRIMARY KEY (tg_user_id, order_id)
 );
+CREATE TABLE IF NOT EXISTS user_location (
+    tg_user_id  INTEGER PRIMARY KEY,
+    lng         REAL    NOT NULL,
+    lat         REAL    NOT NULL,
+    label       TEXT,
+    updated_at  INTEGER NOT NULL
+);
 """
 
 
@@ -138,6 +145,24 @@ def list_orders(tg_user_id: int, limit: int = 5) -> list[dict]:
             (tg_user_id, limit),
         ).fetchall()
     return [{"order_id": r["order_id"], "summary": r["summary"], "created_at": r["created_at"]} for r in rows]
+
+
+def set_location(tg_user_id: int, lng: float, lat: float, label: Optional[str] = None) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO user_location (tg_user_id, lng, lat, label, updated_at) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(tg_user_id) DO UPDATE SET "
+            "lng=excluded.lng, lat=excluded.lat, label=excluded.label, updated_at=excluded.updated_at",
+            (tg_user_id, lng, lat, label, int(time.time())),
+        )
+
+
+def get_location(tg_user_id: int) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT lng, lat, label FROM user_location WHERE tg_user_id=?", (tg_user_id,)
+        ).fetchone()
+    return {"lng": row["lng"], "lat": row["lat"], "label": row["label"]} if row else None
 
 
 def spend_today(tg_user_id: int, day: str) -> float:

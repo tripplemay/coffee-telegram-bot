@@ -22,6 +22,7 @@ from datetime import datetime
 from io import BytesIO
 from typing import Optional
 
+import httpx
 import qrcode
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
@@ -38,9 +39,9 @@ log = logging.getLogger("service")
 WELCOME = (
     "☕ 瑞幸点单助手\n"
     "1) 登录：/login <你的瑞幸Token>（在 open.lkcoffee.com 登录后复制 Token）\n"
-    "2) 设位置：/loc 经度,纬度（如 /loc 116.392,39.982）\n"
+    "2) 设位置：/loc 你的地址（如 /loc 成都天府五街999号），或 /loc 经度,纬度\n"
     "3) 直接说想喝什么，例如「来杯热的生椰拿铁」\n"
-    "下单前会让你回复『确认』，不会乱扣款。其他命令：/orders 查订单、/cancel 取消"
+    "位置会被记住，下次不用重设。下单前会让你回复『确认』，不会乱扣款。其他：/orders 查订单、/cancel 取消"
 )
 
 
@@ -151,13 +152,25 @@ class ChannelCore:
             st.pending_cancel = None
 
         if text.startswith("/loc"):
-            arg = text.split(maxsplit=1)
-            coords = _parse_coords(arg[1]) if len(arg) > 1 else None
+            parts = text.split(maxsplit=1)
+            arg = parts[1].strip() if len(parts) > 1 else ""
+            if not arg:
+                return [_text("用法：/loc 你的地址（如 /loc 成都天府五街999号），或 /loc 经度,纬度")]
+            coords = _parse_coords(arg)
+            label = f"{coords[0]},{coords[1]}" if coords else None
             if not coords:
-                return [_text("用法：/loc 经度,纬度（经度在前），如 /loc 116.392,39.982。经度∈[-180,180]、纬度∈[-90,90]。")]
+                if _looks_like_coords(arg):
+                    return [_text("坐标超出范围（经度∈[-180,180]、纬度∈[-90,90]）。也可直接发地址，如 /loc 成都天府五街")]
+                geo = await self._geocode(arg)
+                if geo is None:
+                    if not get_settings().amap_key:
+                        return [_text("还没配置地址解析（缺 AMAP_KEY）。先用经纬度：/loc 116.392,39.982")]
+                    return [_text(f"没找到「{arg}」，换个更具体的写法试试（带城市/区/路名）。")]
+                coords, label = (geo[0], geo[1]), geo[2]
             st.location = coords
             st.messages = self._agent.new_conversation(coords)
-            return [_text(f"📍 位置已记录（经度 {coords[0]}, 纬度 {coords[1]}），想喝点什么？")]
+            db.set_location(_uid(key), coords[0], coords[1], label)
+            return [_text(f"📍 已定位：{label}（{coords[0]}, {coords[1]}），想喝点什么？")]
 
         if text in ("/orders", "查订单", "我的订单"):
             return await self._orders(key, rec.token)
@@ -169,7 +182,12 @@ class ChannelCore:
 
         # 自然语言点单
         if not st.location:
-            return [_text("先发『/loc 经度,纬度』设置位置吧（如 /loc 116.392,39.982），我才能帮你找附近门店。")]
+            saved = db.get_location(_uid(key))  # 记住的位置，免得每次重设
+            if saved:
+                st.location = (saved["lng"], saved["lat"])
+                st.messages = self._agent.new_conversation(st.location)
+            else:
+                return [_text("先发『/loc 你的地址』设置位置吧（如 /loc 成都天府五街999号），我才能帮你找附近门店。")]
         if st.messages is None:
             st.messages = self._agent.new_conversation(st.location)
         st.messages.append({"role": "user", "content": text})
@@ -237,6 +255,24 @@ class ChannelCore:
             acts.append(_text(closing))
         return acts
 
+    async def _geocode(self, address: str) -> Optional[tuple]:
+        """高德地理编码：地址 → (lng, lat, formatted)，GCJ-02（与瑞幸一致）。未配 key/失败返回 None。"""
+        gkey = get_settings().amap_key
+        if not gkey:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get("https://restapi.amap.com/v3/geocode/geo",
+                                params={"address": address, "key": gkey})
+                data = r.json()
+            if data.get("status") == "1" and data.get("geocodes"):
+                g = data["geocodes"][0]
+                lng_s, lat_s = g["location"].split(",")
+                return (float(lng_s), float(lat_s), g.get("formatted_address") or address)
+        except Exception as e:
+            log.warning("geocode failed for %r: %s", address, e)
+        return None
+
     async def _safe_resume(self, st: UserState, call: dict, token: str, create_result) -> str:
         """续聊拿收尾文本；失败只影响提示，绝不影响已下的单。"""
         try:
@@ -297,6 +333,11 @@ class ChannelCore:
             db.mark_order_cancelled(_uid(key), order_id)
             return [_text("✅ 已取消订单。")]
         return [_text("取消失败：" + flows.cancel_message(result))]
+
+
+def _looks_like_coords(arg: str) -> bool:
+    """形如「数字,数字」（无字母/汉字）→ 用户意图是坐标而非地址。"""
+    return re.fullmatch(r"\s*-?\d+\.?\d*\s*[,，\s]\s*-?\d+\.?\d*\s*", arg) is not None
 
 
 def _parse_coords(arg: str) -> Optional[tuple]:

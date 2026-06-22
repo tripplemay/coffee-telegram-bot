@@ -47,6 +47,15 @@ def test_order_history():
     assert [o["order_id"] for o in db.list_orders(3002)] == ["o-200"]
 
 
+def test_location_persistence():
+    assert db.get_location(7001) is None
+    db.set_location(7001, 116.39, 39.98, "北京安贞")
+    loc = db.get_location(7001)
+    assert loc["lng"] == 116.39 and loc["lat"] == 39.98 and loc["label"] == "北京安贞"
+    db.set_location(7001, 104.06, 30.57, "成都天府五街")  # upsert 覆盖
+    assert db.get_location(7001)["label"] == "成都天府五街"
+
+
 def test_spend_tracking():
     db.record_spend(1003, "2026-06-22", 16.0, "o1")
     db.record_spend(1003, "2026-06-22", 13.5, "o2")

@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     db_path: str = "coffee.db"
     daily_spend_limit: float = 100.0
     bridge_secret: str = ""  # 渠道服务 /message 的共享密钥（微信桥接用），留空则不校验
+    amap_key: str = ""       # 高德 Web 服务 key，用于「地址→GCJ-02 坐标」地理编码
 
 
 @lru_cache
