@@ -24,7 +24,6 @@ from datetime import datetime
 from io import BytesIO
 from typing import Optional
 
-import httpx
 import qrcode
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
@@ -32,7 +31,7 @@ from pydantic import BaseModel
 from bot import flows
 from bot.agent import OrderingAgent
 from bot.mcp_client import LuckinMCPClient
-from core import asr, coupon, db
+from core import amap, asr, coupon, db
 from core.config import get_settings, login_base_url
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -199,8 +198,7 @@ class ChannelCore:
             if saved:
                 st.location = (saved["lng"], saved["lat"])
                 st.messages = self._agent.new_conversation(st.location)
-            else:
-                return self._here(key)  # 无任何位置 → 给一键定位链接（含 /loc 兜底）
+            # 无位置不再直接拦截：消息可能自带地点(交给 agent geocode)；agent 需要时会按提示词请用户 /loc 或 /here
         if st.messages is None:
             st.messages = self._agent.new_conversation(st.location)
         st.messages.append({"role": "user", "content": text})
@@ -294,22 +292,8 @@ class ChannelCore:
                       "或直接发『/loc 你的地址』（如 /loc 成都天府五街999号）。链接 15 分钟内有效。")]
 
     async def _geocode(self, address: str) -> Optional[tuple]:
-        """高德地理编码：地址 → (lng, lat, formatted)，GCJ-02（与瑞幸一致）。未配 key/失败返回 None。"""
-        gkey = get_settings().amap_key
-        if not gkey:
-            return None
-        try:
-            async with httpx.AsyncClient(timeout=10) as c:
-                r = await c.get("https://restapi.amap.com/v3/geocode/geo",
-                                params={"address": address, "key": gkey})
-                data = r.json()
-            if data.get("status") == "1" and data.get("geocodes"):
-                g = data["geocodes"][0]
-                lng_s, lat_s = g["location"].split(",")
-                return (float(lng_s), float(lat_s), g.get("formatted_address") or address)
-        except Exception as e:
-            log.warning("geocode failed for %r: %s", address, e)
-        return None
+        """地址 → (lng, lat, formatted)，GCJ-02。委托 core.amap（与 agent 的 geocodeAddress 同源）。"""
+        return await amap.geocode_address(address)
 
     async def _safe_resume(self, st: UserState, call: dict, token: str, create_result) -> str:
         """续聊拿收尾文本；失败只影响提示，绝不影响已下的单。"""

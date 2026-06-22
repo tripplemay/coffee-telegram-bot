@@ -14,23 +14,38 @@ from typing import Any, Optional
 import httpx
 
 from bot.mcp_client import LuckinMCPClient, MCPToolError
-from bot.tools import CONFIRM_REQUIRED, TOOL_SCHEMAS
+from bot.tools import CONFIRM_REQUIRED, NON_MCP_TOOLS, TOOL_SCHEMAS
+from core import amap
 from core.config import get_settings
 
 log = logging.getLogger("agent")
 
-SYSTEM_PROMPT = """你是 Telegram 上的瑞幸咖啡点单助手，用简体中文、简洁口语化地帮用户点单。
+SYSTEM_PROMPT = """你是瑞幸咖啡点单助手，用简体中文、简洁口语化地帮用户点单。
 
-可用工具覆盖：查门店(queryShopList)、搜商品(searchProductForMcp)、切换属性(switchProduct)、
-商品详情(queryProductDetailInfo)、订单预览(previewOrder)、创建订单(createOrder)、
-订单详情(queryOrderDetailInfo)、取消订单(cancelOrder)。
+可用工具：geocodeAddress(地点→经纬度)、queryShopList(查门店)、searchProductForMcp(搜商品)、
+switchProduct(切属性)、queryProductDetailInfo(商品详情)、previewOrder(订单预览)、
+createOrder(创建订单)、queryOrderDetailInfo(订单详情)、cancelOrder(取消订单)。
 
-规则：
-1. 必须先有门店：用用户的经纬度调 queryShopList，选定 deptId 后再搜商品。若没有位置信息，请让用户分享位置。
-2. 商品的 productId / skuCode 一律来自 searchProductForMcp 或 switchProduct 的返回，绝不要编造。
-3. 下单前先调 previewOrder 给用户看明细。调用 createOrder 时，系统会自动弹出价格确认按钮让用户点“确认”——你只管在合适时机调用 createOrder 即可，不要自己假装已下单。
-4. 拿到订单后可用 queryOrderDetailInfo 查状态/取餐码。
-5. 回答简短，不要罗列大段 JSON。金额、温度、杯型等关键信息要讲清楚。
+【找店：先确定"以哪个位置找店"】
+1. 若用户在话里指定了地点/地标/地址（如"在港汇紫光星云中心附近""公司楼下""天府三街那家"），
+   先调 geocodeAddress 把该地点转成经纬度，再用这个坐标调 queryShopList——不要默认用当前位置。
+2. 否则用下方给出的"当前用户位置"调 queryShopList。
+3. 若既没有当前位置、用户也没提地点 → 绝不要编造坐标，礼貌请用户发『/here 一键定位』或『/loc 地址』或分享位置。
+
+【拿不准就先问，别猜（重要）】
+4. 当意图不明确、信息不全或有歧义/冲突时，先用一句话追问澄清，确认后再继续，绝不擅自猜测或默认：
+   - 门店有多个候选 → 列最近的 2~3 个（名称+距离）让用户选；
+   - 商品多匹配、或用户说得很泛（"来杯咖啡""随便"）→ 给 2~3 个建议问要哪个；
+   - 关键信息缺失（门店 / 冰或热 / 杯型 / 数量）→ 简短追问；
+   - 地点解析不出来 → 告诉用户没找到，请换个更具体的说法（带城市/区/路名/楼宇）。
+5. 这是多轮对话：你能看到完整上文，逐步问清即可，不要重复已确认过的信息。
+
+【商品与下单】
+6. productId / skuCode 一律来自 searchProductForMcp 或 switchProduct 的返回，绝不编造。
+7. 下单前先调 previewOrder 给用户看明细（门店、商品、规格、价格）。调用 createOrder 时系统会自动弹价格
+   确认按钮让用户点"确认"——你只管在合适时机调用 createOrder，不要自己假装已下单。
+8. 拿到订单后可用 queryOrderDetailInfo 查状态/取餐码。
+9. 回答简短，不堆 JSON。金额、温度、杯型、门店等关键信息讲清楚；门店若"打烊中/未营业"要提醒可能下不了单。
 """
 
 
@@ -71,19 +86,42 @@ class OrderingAgent:
             args = json.loads(args_json or "{}")
         except json.JSONDecodeError:
             return {"error": f"参数解析失败: {args_json!r}"}
+        if name in NON_MCP_TOOLS:
+            return await self._local_tool(name, args)
         try:
             return await self._mcp.call_tool(token, name, args)
         except MCPToolError as e:
             return {"error": str(e)}
 
+    async def _local_tool(self, name: str, args: dict) -> Any:
+        """本地（非瑞幸 MCP）工具：目前只有 geocodeAddress（高德地理编码）。"""
+        if name == "geocodeAddress":
+            addr = (args.get("address") or "").strip()
+            if not addr:
+                return {"error": "缺少 address"}
+            res = await amap.geocode_address(addr)
+            if res is None:
+                if not get_settings().amap_key:
+                    return {"error": "未配置地理编码(AMAP_KEY)，无法解析地点；请让用户用一键定位/分享位置"}
+                return {"error": f"没找到「{addr}」，请让用户换个更具体的说法（带城市/区/路名/楼宇）"}
+            lng, lat, formatted = res
+            log.info("geocode %r -> (%s, %s) %s", addr, lng, lat, formatted)
+            return {"longitude": lng, "latitude": lat, "formatted_address": formatted}
+        return {"error": f"未知本地工具: {name}"}
+
     async def step(self, messages: list[dict], token: str, max_iters: int = 8) -> AgentResult:
         """推进对话直到产生文本回复，或遇到 createOrder 需要用户确认。"""
+        user_last = next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), None)
+        if user_last:
+            log.info("user: %s", str(user_last)[:160])
         for _ in range(max_iters):
             msg = await self._chat(messages)
             messages.append(msg)
             tool_calls = msg.get("tool_calls") or []
             if not tool_calls:
-                return AgentResult("text", text=msg.get("content") or "", messages=messages)
+                text = msg.get("content") or ""
+                log.info("reply: %s", text[:200])
+                return AgentResult("text", text=text, messages=messages)
 
             confirm_call = None
             for tc in tool_calls:

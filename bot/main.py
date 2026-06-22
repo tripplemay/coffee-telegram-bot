@@ -299,9 +299,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text0
         if saved:
             context.user_data["location"] = (saved["lng"], saved["lat"])
             context.user_data["messages"] = AGENT.new_conversation((saved["lng"], saved["lat"]))
-        else:
-            await cmd_here(update, context)  # 从无位置 → 主动弹一键定位，别让 LLM 干巴巴地要
-            return
+        # 无位置不再强弹定位：消息可能自带地点(交给 agent geocode)；agent 需要时会按提示词请用户 /here
     messages = context.user_data.get("messages") or AGENT.new_conversation(context.user_data.get("location"))
     messages.append({"role": "user", "content": text0})
     await context.bot.send_chat_action(update.effective_chat.id, "typing")

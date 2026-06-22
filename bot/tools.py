@@ -30,7 +30,15 @@ def _fn(name: str, description: str, properties: dict, required: list[str]) -> d
     }
 
 
+# geocodeAddress 不是瑞幸 MCP 工具，由 agent 本地用高德地理编码处理（见 bot/agent.py）
+NON_MCP_TOOLS = {"geocodeAddress"}
+
 TOOL_SCHEMAS: list[dict] = [
+    _fn("geocodeAddress",
+        "把地点名/地址/地标转成经纬度。当用户指定『在某地附近的店/某楼下/某路那家』时，先用它拿到坐标，再调 queryShopList。", {
+            "address": {"type": "string", "description": "地点名称/地址/地标，如『成都港汇紫光星云中心』『天府三街』"},
+        }, ["address"]),
+
     _fn("queryShopList", "瑞幸咖啡查询门店列表（按经纬度找附近门店）", {
         "deptName": {"type": "string", "description": "门店名称（可选，用于按名搜索）"},
         "longitude": {"type": "number", "description": "经度"},

@@ -59,7 +59,7 @@ async def test_wechat_order_flow_and_guardrail(monkeypatch):
     u = "wx_user_1"
     assert "请先登录" in (await core.handle(u, "来杯生椰拿铁"))[0]["text"]
     assert "登录成功" in (await core.handle(u, "/login TESTTOKEN"))[0]["text"]
-    assert "/loc" in (await core.handle(u, "来杯生椰拿铁"))[0]["text"]
+    # 无位置不再硬拦截（改为交给 agent geocode/追问）；此处直接设好位置再进下单流程
     assert "已定位" in (await core.handle(u, "/loc 116.39,39.98"))[0]["text"]
 
     # 下单 → 必须停在确认态，createOrder 未执行

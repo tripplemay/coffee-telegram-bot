@@ -19,7 +19,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from core import db, push
+from core import amap, db, push
 from core.config import get_settings
 from core.coupon import ConsumerClient
 from core.geo import wgs84_to_gcj02
@@ -210,25 +210,6 @@ async def coupon_login(req: Request):
                          "msg": resp.get("msg", "") if isinstance(resp, dict) else ""})
 
 
-async def _regeo(lng: float, lat: float) -> str:
-    """高德逆地理编码：GCJ-02 坐标 → 可读地址；未配 key/失败则回退默认标签。"""
-    key = get_settings().amap_key
-    if not key:
-        return "我的位置"
-    try:
-        async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.get("https://restapi.amap.com/v3/geocode/regeo",
-                            params={"location": f"{lng},{lat}", "key": key, "radius": 200})
-            d = r.json()
-        if d.get("status") == "1":
-            addr = (d.get("regeocode") or {}).get("formatted_address")
-            if isinstance(addr, str) and addr:
-                return addr
-    except Exception as e:
-        log.warning("regeo failed: %s", e)
-    return "我的位置"
-
-
 @app.get("/set-location", response_class=HTMLResponse)
 async def location_page(req: Request):
     return HTMLResponse(LOCATION_HTML)
@@ -250,7 +231,7 @@ async def set_location(req: Request):
         return JSONResponse({"ok": False, "msg": "定位链接无效或已过期，请回机器人重发"}, status_code=400)
     # 浏览器定位是 WGS-84，瑞幸按 GCJ-02 检索门店 → 服务端统一转换（与 Telegram 原生定位同源逻辑）
     gcj_lng, gcj_lat = wgs84_to_gcj02(lng, lat)
-    label = await _regeo(gcj_lng, gcj_lat)
+    label = await amap.regeo(gcj_lng, gcj_lat)
     db.set_location(rec.user_key, gcj_lng, gcj_lat, label)
     log.info("location set for user_key %s via nonce", rec.user_key)
     try:
