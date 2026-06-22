@@ -107,6 +107,11 @@ class ChannelCore:
             self._seen[mk] = True
             if len(self._seen) > 5000:
                 self._seen.popitem(last=False)
+        uid = _uid(user_key)
+        db.touch_user(uid, "wx", None)
+        reason = db.gate_message(uid, db.today_cst())  # 封禁 / 每日次数上限（护 API 预算）
+        if reason:
+            return [_text(reason)]
         st = self._state(user_key)
         async with st.lock:  # 串行化同一用户的并发消息
             try:

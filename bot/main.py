@@ -251,6 +251,12 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id
+    db.touch_user(uid, "tg", update.effective_user.full_name)
+    reason = db.gate_message(uid, db.today_cst())  # 封禁 / 每日次数上限（护 API 预算）
+    if reason:
+        await update.message.reply_text(reason)
+        return
     await _handle_text(update, context, (update.message.text or "").strip())
 
 
@@ -258,6 +264,12 @@ async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """语音消息 → 转写 → 回显 → 当作文字走同一套点单逻辑（确认护栏不变）。"""
     voice = update.message.voice or update.message.audio
     if voice is None:
+        return
+    uid = update.effective_user.id
+    db.touch_user(uid, "tg", update.effective_user.full_name)
+    reason = db.gate_message(uid, db.today_cst())  # 闸在转写前，过限不花 ASR
+    if reason:
+        await update.message.reply_text(reason)
         return
     if not asr.asr_enabled():
         await update.message.reply_text("语音功能还没开启（需配置云 ASR），先打字告诉我吧～")

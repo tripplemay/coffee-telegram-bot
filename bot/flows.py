@@ -10,7 +10,6 @@ from telegram import Bot
 
 from bot.mcp_client import LuckinMCPClient
 from core import db
-from core.config import get_settings
 from core.luckin import ORDER_STATUS
 
 log = logging.getLogger("flows")
@@ -65,10 +64,10 @@ def format_preview(resp: Any) -> tuple[str, Optional[float]]:
 
 
 def spend_guard(tg_user_id: int, price: Optional[float]) -> Optional[str]:
-    """返回 None 表示放行；否则返回拒绝原因。"""
+    """返回 None 表示放行；否则返回拒绝原因。消费上限按用户取（可被 /admin 单独设）。"""
     if price is None:
         return None
-    limit = get_settings().daily_spend_limit
+    limit = db.effective_spend_limit(tg_user_id)  # 每用户覆盖值，未设则全局默认
     day = datetime.now().strftime("%Y-%m-%d")
     already = db.spend_today(tg_user_id, day)
     if already + price > limit:

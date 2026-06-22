@@ -111,6 +111,7 @@ class OrderingAgent:
 
     async def step(self, messages: list[dict], token: str, max_iters: int = 8) -> AgentResult:
         """推进对话直到产生文本回复，或遇到 createOrder 需要用户确认。"""
+        messages = self._trim_history(messages)
         user_last = next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), None)
         if user_last:
             log.info("user: %s", str(user_last)[:160])
@@ -142,6 +143,18 @@ class OrderingAgent:
                 confirm_call = self._with_preview_coupons(confirm_call, preview)
                 return AgentResult("confirm", pending_call=confirm_call, preview=preview, messages=messages)
         return AgentResult("text", text="（处理步骤过多，已停止；请换个说法重试）", messages=messages)
+
+    @staticmethod
+    def _trim_history(messages: list[dict]) -> list[dict]:
+        """裁剪对话历史，控上下文成本：保留 system + 最近若干条，且从 user 消息起头
+        （避免切断 tool_calls/tool 结果配对导致 API 报错）。"""
+        cap = get_settings().history_max_msgs
+        if len(messages) <= cap + 1:  # +1 = system
+            return messages
+        tail = messages[-cap:]
+        while tail and tail[0].get("role") != "user":
+            tail = tail[1:]
+        return messages[:1] + tail
 
     @staticmethod
     def _with_preview_coupons(call: dict, preview: Any) -> dict:

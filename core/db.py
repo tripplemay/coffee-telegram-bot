@@ -7,6 +7,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -68,6 +69,25 @@ CREATE TABLE IF NOT EXISTS coupon_claim_log (
     day         TEXT    NOT NULL,
     claimed     INTEGER NOT NULL,
     created_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS users (
+    user_key   INTEGER PRIMARY KEY,   -- 多用户：建档 + 活跃 + 封禁（/admin、告警用）
+    channel    TEXT,                  -- 'tg' | 'wx'
+    label      TEXT,                  -- 显示名（若拿得到）
+    first_seen INTEGER NOT NULL,
+    last_seen  INTEGER NOT NULL,
+    blocked    INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS usage_log (
+    user_key  INTEGER NOT NULL,       -- 每用户每日消息计数（限频，护 API 预算）
+    day       TEXT    NOT NULL,
+    msg_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_key, day)
+);
+CREATE TABLE IF NOT EXISTS user_limits (
+    user_key    INTEGER PRIMARY KEY,  -- 每用户限额覆盖（NULL=用全局默认）
+    daily_spend REAL,
+    daily_msgs  INTEGER
 );
 """
 
@@ -295,3 +315,116 @@ def spend_today(tg_user_id: int, day: str) -> float:
             (tg_user_id, day),
         ).fetchone()
     return float(row["s"] or 0.0)
+
+
+# ---- 多用户：建档/活跃/封禁 · 限频 · 每用户限额 ----
+
+_CST = timezone(timedelta(hours=8))
+
+
+def today_cst() -> str:
+    """固定 +08:00 的"今天"（避免服务器若为 UTC 导致按天计数在 08:00 重置）。"""
+    return datetime.now(_CST).strftime("%Y-%m-%d")
+
+
+def touch_user(user_key: int, channel: Optional[str] = None, label: Optional[str] = None) -> bool:
+    """更新 last_seen（首次出现则建档）。返回 True 表示这是新用户（供告警）。"""
+    now = int(time.time())
+    with _connect() as conn:
+        exists = conn.execute("SELECT 1 FROM users WHERE user_key=?", (user_key,)).fetchone()
+        if exists:
+            conn.execute(
+                "UPDATE users SET last_seen=?, channel=COALESCE(?, channel), label=COALESCE(?, label) WHERE user_key=?",
+                (now, channel, label, user_key))
+            return False
+        conn.execute(
+            "INSERT INTO users (user_key, channel, label, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)",
+            (user_key, channel, label, now, now))
+        return True
+
+
+def is_blocked(user_key: int) -> bool:
+    with _connect() as conn:
+        row = conn.execute("SELECT blocked FROM users WHERE user_key=?", (user_key,)).fetchone()
+    return bool(row and row["blocked"])
+
+
+def set_blocked(user_key: int, blocked: bool) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE users SET blocked=? WHERE user_key=?", (1 if blocked else 0, user_key))
+
+
+def usage_today(user_key: int, day: str) -> int:
+    with _connect() as conn:
+        row = conn.execute("SELECT msg_count FROM usage_log WHERE user_key=? AND day=?", (user_key, day)).fetchone()
+    return int(row["msg_count"]) if row else 0
+
+
+def incr_usage(user_key: int, day: str) -> int:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO usage_log (user_key, day, msg_count) VALUES (?, ?, 1) "
+            "ON CONFLICT(user_key, day) DO UPDATE SET msg_count = msg_count + 1",
+            (user_key, day))
+        row = conn.execute("SELECT msg_count FROM usage_log WHERE user_key=? AND day=?", (user_key, day)).fetchone()
+    return int(row["msg_count"])
+
+
+def set_user_limit(user_key: int, daily_spend: Optional[float] = None, daily_msgs: Optional[int] = None) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO user_limits (user_key, daily_spend, daily_msgs) VALUES (?, ?, ?) "
+            "ON CONFLICT(user_key) DO UPDATE SET daily_spend=excluded.daily_spend, daily_msgs=excluded.daily_msgs",
+            (user_key, daily_spend, daily_msgs))
+
+
+def get_user_limits(user_key: int) -> tuple[Optional[float], Optional[int]]:
+    """(daily_spend, daily_msgs) 覆盖值；未设为 (None, None)。"""
+    with _connect() as conn:
+        row = conn.execute("SELECT daily_spend, daily_msgs FROM user_limits WHERE user_key=?", (user_key,)).fetchone()
+    return (row["daily_spend"], row["daily_msgs"]) if row else (None, None)
+
+
+def effective_spend_limit(user_key: int) -> float:
+    override, _ = get_user_limits(user_key)
+    return float(override) if override is not None else get_settings().daily_spend_limit
+
+
+def effective_msg_limit(user_key: int) -> int:
+    _, override = get_user_limits(user_key)
+    return int(override) if override is not None else get_settings().daily_msg_limit
+
+
+def gate_message(user_key: int, day: str) -> Optional[str]:
+    """每条入站消息的准入闸：封禁 / 超每日次数 → 返回拒绝语；放行则计数并返回 None。"""
+    if is_blocked(user_key):
+        return "你已被管理员停用本服务。"
+    limit = effective_msg_limit(user_key)
+    if usage_today(user_key, day) >= limit:
+        return f"今日使用次数已达上限（{limit} 次/天），明天再来～"
+    incr_usage(user_key, day)
+    return None
+
+
+def _order_count(user_key: int) -> int:
+    with _connect() as conn:
+        row = conn.execute("SELECT COUNT(*) AS n FROM orders WHERE tg_user_id=?", (user_key,)).fetchone()
+    return int(row["n"] or 0)
+
+
+def list_users(day: str, limit: int = 50) -> list[dict]:
+    """用户列表（最近活跃在前）+ 今日消息/消费 + 总订单数，供 /admin。"""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT user_key, channel, label, last_seen, blocked FROM users ORDER BY last_seen DESC LIMIT ?",
+            (limit,)).fetchall()
+    out = []
+    for r in rows:
+        uk = r["user_key"]
+        out.append({
+            "user_key": uk, "channel": r["channel"], "label": r["label"],
+            "last_seen": r["last_seen"], "blocked": bool(r["blocked"]),
+            "msgs_today": usage_today(uk, day), "spend_today": spend_today(uk, day),
+            "orders": _order_count(uk),
+        })
+    return out

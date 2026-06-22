@@ -11,6 +11,11 @@ class Settings(BaseSettings):
 
     bot_token: str = ""
     public_base_url: str = ""
+    # ---- 多用户：owner（/admin + 告警）+ 每用户限额/限频 ----
+    owner_tg_id: int = 0          # Telegram owner 数字 id（0=未配置，则 /admin 关闭）
+    owner_wx_key: str = ""        # 微信 owner 的原始 user_key（from_user_id）
+    daily_msg_limit: int = 50     # 每用户每日"动用 LLM 的消息/语音"上限，防 API 预算被滥用
+    history_max_msgs: int = 24    # 对话历史保留的最大消息条数（不含 system），控上下文成本
     llm_model: str = "deepseek-v3"
     aigc_base_url: str = "https://aigc.guangai.ai/v1"
     aigc_api_key: str = ""
