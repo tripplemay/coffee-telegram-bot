@@ -1,6 +1,7 @@
 // 微信 (wx-link / 腾讯 iLink) <-> Python 点单服务 桥接。
 // 收到微信消息 -> POST 到 service /message -> 把返回的 actions 发回微信。
 // 注意：用【专用/小号】微信登录；这是非官方协议，封号风险自负。
+import http from "node:http";
 import fs from "node:fs";
 import readline from "node:readline";
 import qrcodeTerminal from "qrcode-terminal";
@@ -9,6 +10,7 @@ import { loginWithQR, WxLinkClient } from "wx-link";
 
 const SERVICE_URL = process.env.SERVICE_URL || "http://127.0.0.1:8100";
 const BRIDGE_SECRET = process.env.BRIDGE_SECRET || "";
+const PUSH_PORT = Number(process.env.PUSH_PORT || 8300); // 入站 /push：后端(登录/定位/领券成功)主动回推
 const SESSION_FILE = new URL("./.wxsession.json", import.meta.url);
 const BOT_AGENT = "coffee-bot/0.1";
 
@@ -101,6 +103,29 @@ async function sendActions(client, uid, ctx, actions) {
   }
 }
 
+// 入站 /push：后端（登录/定位/领券成功）主动把消息回推给微信用户（无 contextToken，已验证可行）
+function startPushServer(client) {
+  const server = http.createServer((req, res) => {
+    if (req.method !== "POST" || !req.url.startsWith("/push")) { res.writeHead(404); res.end("not found"); return; }
+    if (BRIDGE_SECRET && req.headers["x-bridge-secret"] !== BRIDGE_SECRET) { res.writeHead(401); res.end("unauthorized"); return; }
+    let body = "";
+    req.on("data", (c) => { body += c; if (body.length > 64 * 1024) req.destroy(); });
+    req.on("end", async () => {
+      try {
+        const { user_key, text } = JSON.parse(body || "{}");
+        if (!user_key || !text) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: "need user_key/text" })); return; }
+        await client.sendTextChunked(user_key, text);
+        res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        console.error("push 失败:", e.message);
+        res.writeHead(500, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+  });
+  server.on("error", (e) => console.error("push server 错误:", e.message));
+  server.listen(PUSH_PORT, "127.0.0.1", () => console.log(`主动回推端点监听 127.0.0.1:${PUSH_PORT}`));
+}
+
 async function getClient() {
   const saved = loadSession();
   if (saved?.botToken) {
@@ -129,6 +154,7 @@ async function getClient() {
 async function main() {
   const { client, cursor: startCursor, selfId } = await getClient();
   let cursor = startCursor;
+  startPushServer(client);
   console.log("开始轮询微信消息…（Ctrl+C 退出）");
   for (;;) {
     let updates;
