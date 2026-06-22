@@ -53,10 +53,41 @@ def test_geocode_no_key(monkeypatch):
     assert _run(amap.geocode_address("成都xx")) is None
 
 
+class _RouteClient:
+    """按 URL 路由返回不同响应：geocode/geo vs place/text。"""
+
+    def __init__(self, geo, poi):
+        self._geo, self._poi = geo, poi
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get(self, url, params=None):
+        return _Resp(self._poi if "place/text" in url else self._geo)
+
+
 def test_geocode_no_result(monkeypatch):
     monkeypatch.setattr(amap, "get_settings", lambda: _settings("k"))
-    monkeypatch.setattr(amap.httpx, "AsyncClient", lambda *a, **k: _Client({"status": "0", "geocodes": []}))
+    monkeypatch.setattr(amap.httpx, "AsyncClient",
+                        lambda *a, **k: _RouteClient({"status": "0", "geocodes": []}, {"status": "0", "pois": []}))
     assert _run(amap.geocode_address("不存在的地方")) is None
+
+
+def test_geocode_poi_fallback(monkeypatch):
+    # 地理编码无果 → 回退 POI 搜索（地标名，模糊匹配）
+    geo = {"status": "0", "geocodes": []}
+    poi = {"status": "1", "pois": [
+        {"name": "紫光芯云中心", "location": "104.058430,30.535650", "address": "高新区益州大道2555号"}]}
+    monkeypatch.setattr(amap, "get_settings", lambda: _settings("k"))
+    monkeypatch.setattr(amap.httpx, "AsyncClient", lambda *a, **k: _RouteClient(geo, poi))
+    res = _run(amap.geocode_address("成都港汇紫光星云中心"))
+    assert res is not None
+    lng, lat, formatted = res
+    assert abs(lng - 104.05843) < 1e-6 and abs(lat - 30.53565) < 1e-6
+    assert "紫光芯云中心" in formatted and "益州大道" in formatted
 
 
 def test_regeo_parses_and_fallback(monkeypatch):

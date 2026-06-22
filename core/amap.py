@@ -17,10 +17,15 @@ log = logging.getLogger("amap")
 
 
 async def geocode_address(address: str) -> Optional[tuple[float, float, str]]:
-    """地址/地名/地标 → (lng, lat, formatted_address)，GCJ-02。未配 key/无结果/失败返回 None。"""
+    """地址/地名/地标 → (lng, lat, formatted_address)，GCJ-02。未配 key/无结果/失败返回 None。
+
+    先用地理编码(geocode/geo，结构化地址最准)；找不到再回退 POI 关键字搜索(place/text，
+    支持楼宇/商场/地标名，且对不精确的名字做模糊匹配)。
+    """
     key = get_settings().amap_key
     if not key:
         return None
+    # 1) 正向地理编码（结构化地址："成都天府五街999号"）
     try:
         async with httpx.AsyncClient(timeout=10) as c:
             r = await c.get("https://restapi.amap.com/v3/geocode/geo",
@@ -32,6 +37,22 @@ async def geocode_address(address: str) -> Optional[tuple[float, float, str]]:
             return (float(lng_s), float(lat_s), g.get("formatted_address") or address)
     except Exception as e:
         log.warning("geocode failed for %r: %s", address, e)
+    # 2) 回退 POI 关键字搜索（地标/楼宇/商场名，如"紫光芯云中心"）
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get("https://restapi.amap.com/v3/place/text",
+                            params={"keywords": address, "offset": 1, "page": 1, "key": key})
+            data = r.json()
+        if data.get("status") == "1" and data.get("pois"):
+            p = data["pois"][0]
+            lng_s, lat_s = p["location"].split(",")
+            name = p.get("name") or address
+            poi_addr = p.get("address")
+            poi_addr = poi_addr if isinstance(poi_addr, str) and poi_addr else ""
+            formatted = f"{name}（{poi_addr}）" if poi_addr else name
+            return (float(lng_s), float(lat_s), formatted)
+    except Exception as e:
+        log.warning("poi search failed for %r: %s", address, e)
     return None
 
 
