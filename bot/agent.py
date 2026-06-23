@@ -120,7 +120,7 @@ class OrderingAgent:
             log.info("user: %s", str(user_last)[:160])
         for _ in range(max_iters):
             msg = await self._chat(messages)
-            messages.append(msg)
+            messages.append(self._clean_msg(msg))  # 存净化版：content 必非空（网关拒 null/空 → 修 400 卡死）
             tool_calls = msg.get("tool_calls") or []
             if not tool_calls:
                 text = msg.get("content") or ""
@@ -146,6 +146,15 @@ class OrderingAgent:
                 confirm_call = self._with_preview_coupons(confirm_call, preview)
                 return AgentResult("confirm", pending_call=confirm_call, preview=preview, messages=messages)
         return AgentResult("text", text="（处理步骤过多，已停止；请换个说法重试）", messages=messages)
+
+    @staticmethod
+    def _clean_msg(msg: dict) -> dict:
+        """存进历史的 assistant 消息：网关要求 content 为非空字符串（连 tool_call 消息也不接受 null/空），
+        故空/None 一律补一个空格；同时只保留标准字段（丢弃 reasoning_content 等，避免重发被拒）。"""
+        clean = {"role": "assistant", "content": (msg.get("content") or " ")}
+        if msg.get("tool_calls"):
+            clean["tool_calls"] = msg["tool_calls"]
+        return clean
 
     @staticmethod
     def _trim_history(messages: list[dict]) -> list[dict]:

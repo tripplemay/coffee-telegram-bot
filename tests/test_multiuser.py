@@ -110,6 +110,19 @@ def test_wechat_new_user_onboarding():
     assert not any("欢迎使用瑞幸点单助手" in a["text"] for a in acts2)
 
 
+def test_clean_msg_forces_nonempty_content():
+    # null/空 content（tool_call 消息）→ 补非空，保留 tool_calls，丢弃非标准字段（网关拒 null content）
+    m = OrderingAgent._clean_msg(
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "x"}], "reasoning_content": "..."})
+    assert m["content"] and m["content"] != ""  # 非空
+    assert m["tool_calls"] == [{"id": "x"}]
+    assert "reasoning_content" not in m
+    m2 = OrderingAgent._clean_msg({"role": "assistant", "content": ""})
+    assert m2["content"] != "" and "tool_calls" not in m2
+    m3 = OrderingAgent._clean_msg({"role": "assistant", "content": "已下单"})
+    assert m3["content"] == "已下单"
+
+
 def test_trim_history_keeps_system_and_user_boundary():
     msgs = [{"role": "system", "content": "sys"}]
     for i in range(60):
