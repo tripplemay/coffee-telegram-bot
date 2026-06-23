@@ -15,3 +15,6 @@ spike/.venv/
 # os
 .DS_Store
 web/.public_url
+
+# 微信加好友二维码（私有，不进公开仓库）
+web/wechat-qr.png

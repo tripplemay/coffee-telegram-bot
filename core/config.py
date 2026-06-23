@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     # ---- 多用户：owner（/admin + 告警）+ 每用户限额/限频 ----
     owner_tg_id: int = 0          # Telegram owner 数字 id（0=未配置，则 /admin 关闭）
     owner_wx_key: str = ""        # 微信 owner 的原始 user_key（from_user_id）
+    bot_username: str = ""        # Telegram bot 用户名（不含 @），落地页深链用，如 tripplecoffeebot
+    wechat_id: str = ""           # 微信小号的可搜索微信号，落地页展示用
     daily_msg_limit: int = 50     # 每用户每日"动用 LLM 的消息/语音"上限，防 API 预算被滥用
     history_max_msgs: int = 24    # 对话历史保留的最大消息条数（不含 system），控上下文成本
     llm_model: str = "deepseek-v3"

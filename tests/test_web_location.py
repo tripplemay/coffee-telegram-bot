@@ -29,6 +29,19 @@ def test_set_location_converts_and_stores(monkeypatch):
     assert r2.status_code == 400
 
 
+def test_landing_renders_and_substitutes(monkeypatch):
+    from web import app as webapp
+    monkeypatch.setattr(webapp, "get_settings",
+                        lambda: type("S", (), {"bot_username": "mybot", "wechat_id": "mywx88"})())
+    with TestClient(webapp.app) as client:
+        r = client.get("/")
+        qr = client.get("/wechat-qr.png")
+    assert r.status_code == 200
+    assert "mybot" in r.text and "mywx88" in r.text  # 占位被替换
+    assert "{{BOT_USERNAME}}" not in r.text
+    assert qr.status_code == 404  # 仓库无 QR 图 → 404（落地页前端自动隐藏）
+
+
 def test_set_location_rejects_bad_coords(monkeypatch):
     async def _noop(*a, **k):
         return True

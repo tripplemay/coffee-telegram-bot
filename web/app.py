@@ -16,8 +16,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from core import amap, db, push
 from core.config import get_settings
@@ -41,6 +41,8 @@ BASE_HEADERS = {
 LOGIN_HTML = (Path(__file__).parent / "login.html").read_text(encoding="utf-8")
 COUPON_LOGIN_HTML = (Path(__file__).parent / "coupon_login.html").read_text(encoding="utf-8")
 LOCATION_HTML = (Path(__file__).parent / "location.html").read_text(encoding="utf-8")
+LANDING_HTML = (Path(__file__).parent / "landing.html").read_text(encoding="utf-8")
+_QR_PATH = Path(__file__).parent / "wechat-qr.png"
 SESSIONS: dict[str, dict] = {}  # sid -> {client, csrf}
 # 领券登录客户端：按**一次性 nonce**(登录票据)隔离，绝不用共享 sid —— 否则两个并发用户会串号/抢验证码
 CONSUMER_CLIENTS: dict[str, ConsumerClient] = {}  # nonce -> 消费版 H5 客户端
@@ -240,6 +242,22 @@ async def set_location(req: Request):
     except Exception as e:
         log.warning("location push failed: %s", e)
     return JSONResponse({"ok": True, "label": label})
+
+
+@app.get("/", response_class=HTMLResponse)
+async def landing():
+    """可分享的统一入口页：Telegram 深链 + 微信号/二维码 + 用法。"""
+    s = get_settings()
+    html = LANDING_HTML.replace("{{BOT_USERNAME}}", s.bot_username).replace("{{WECHAT_ID}}", s.wechat_id)
+    return HTMLResponse(html)
+
+
+@app.get("/wechat-qr.png")
+async def wechat_qr():
+    """微信加好友二维码（owner 放 web/wechat-qr.png 即生效；没有则 404，落地页自动隐藏）。"""
+    if _QR_PATH.exists():
+        return FileResponse(_QR_PATH, media_type="image/png")
+    raise HTTPException(status_code=404)
 
 
 @app.get("/health")
