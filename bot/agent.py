@@ -42,6 +42,8 @@ createOrder(创建订单)、queryOrderDetailInfo(订单详情)、cancelOrder(取
 
 【商品与下单】
 6. productId / skuCode 一律来自 searchProductForMcp 或 switchProduct 的返回，绝不编造。
+   多杯单可在**一次回复里同时调用相互独立的工具**（如同时搜两个商品）以减少往返；但有依赖的步骤
+   （切属性依赖刚搜到的 skuCode、下单依赖门店）按顺序来。
 7. 下单前先调 previewOrder 给用户看明细（门店、商品、规格、价格）。调用 createOrder 时系统会自动弹价格
    确认按钮让用户点"确认"——你只管在合适时机调用 createOrder，不要自己假装已下单。
 8. 拿到订单后可用 queryOrderDetailInfo 查状态/取餐码。
@@ -66,6 +68,7 @@ class OrderingAgent:
         self._model = s.llm_model
         self._url = f"{s.aigc_base_url}/chat/completions"
         self._key = s.aigc_api_key
+        self._max_iters = s.agent_max_iters
         self._http = http or httpx.AsyncClient(timeout=60.0)
 
     def new_conversation(self, location: Optional[tuple[float, float]] = None) -> list[dict]:
@@ -112,8 +115,10 @@ class OrderingAgent:
             return {"longitude": lng, "latitude": lat, "formatted_address": formatted}
         return {"error": f"未知本地工具: {name}"}
 
-    async def step(self, messages: list[dict], token: str, max_iters: int = 8) -> AgentResult:
+    async def step(self, messages: list[dict], token: str, max_iters: Optional[int] = None) -> AgentResult:
         """推进对话直到产生文本回复，或遇到 createOrder 需要用户确认。"""
+        if max_iters is None:
+            max_iters = self._max_iters
         messages = self._trim_history(messages)
         user_last = next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), None)
         if user_last:

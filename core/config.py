@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     wechat_id: str = ""           # 微信小号的可搜索微信号，落地页展示用
     daily_msg_limit: int = 50     # 每用户每日"动用 LLM 的消息/语音"上限，防 API 预算被滥用
     history_max_msgs: int = 24    # 对话历史保留的最大消息条数（不含 system），控上下文成本
+    agent_max_iters: int = 20     # agent function-calling 单步最大轮数（复杂多杯定制单需要更多）
     llm_model: str = "deepseek-v3"
     aigc_base_url: str = "https://aigc.guangai.ai/v1"
     aigc_api_key: str = ""
